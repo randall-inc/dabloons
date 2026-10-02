@@ -184,7 +184,7 @@ export function createApp(deps: Deps<any>) {
   app.get("/device", publicRead, spa);
   app.get("/dashboard/*", publicRead, spa);
 
-  // Legal pages: /terms, /privacy, /refunds.
+  // Legal pages: /terms, /privacy, /refunds, and /support.
   for (const [path, html] of Object.entries(legalPages)) app.get(path, publicRead, (c) => c.html(html));
 
   // The human's own account view. The only place the purchased part of a

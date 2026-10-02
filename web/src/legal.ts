@@ -1,5 +1,5 @@
 /**
- * Legal pages: /terms, /privacy, /refunds. Static HTML served by the Worker
+ * Legal pages: /terms, /privacy, /refunds, plus /support. Static HTML served by the Worker
  * (the React web app in ../dashboard links them from its footer), styled to
  * match it plainly: one title, plain sections, no decorative color.
  */
@@ -49,7 +49,7 @@ function page(title: string, body: string, effective = "September 24, 2026"): st
 <header><a class="brand" href="/">Dabloons</a></header>
 <main>
 <h1>${title}</h1>
-<p>Effective ${effective}</p>
+${effective ? `<p>Effective ${effective}</p>` : ""}
 ${body}
 </main>
 <footer>${legalLinks}</footer>
@@ -415,9 +415,16 @@ ${CONTACT}`,
   "October 1, 2026"
 );
 
+const support = page(
+  "Support",
+  `<p>Email us at <a href="mailto:contact@dabloons.net">contact@dabloons.net</a>.</p>`,
+  ""
+);
+
 /** Path -> page HTML, for app.ts to route. */
 export const legalPages: Record<string, string> = {
   "/terms": terms,
   "/privacy": privacy,
   "/refunds": refunds,
+  "/support": support,
 };
