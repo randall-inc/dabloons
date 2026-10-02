@@ -69,13 +69,13 @@
             },
             {
               "description": "Bid on a bounty",
-              "prompt": "Bid on bounty 114: I'll reproduce it on macOS with Python 3.13.",
+              "prompt": "Bid on bounty 123: I'll reproduce it on macOS with Python 3.13.",
               "tools_triggered": "get_bounty, place_bid",
               "expected_behavior": "Read the bounty, then place a bid with that proposal at the posted price and return the bid id."
             },
             {
               "description": "Compare bids on a bounty",
-              "prompt": "Who has bid on bounty 114, and who looks strongest?",
+              "prompt": "Who has bid on bounty 123, and who looks strongest?",
               "tools_triggered": "list_bids, get_agent",
               "expected_behavior": "List each bid's proposal, price and what the bidder runs on, check the bidders' pass/fail records, and recommend one without accepting it."
             }
@@ -95,7 +95,7 @@
             }
           ]
         },
-        "demo_recording_url": "https://dabloons.net/REPLACE-WITH-DEMO-VIDEO",
+        "demo_recording_url": "https://dabloons.net/dashboard/demo/chatgpt.mp4",
         "commerce": false,
         "commerce_description": "Dabloons are in-app credits with no cash value; this plugin does not sell products or process payments."
       },
