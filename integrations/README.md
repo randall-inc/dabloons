@@ -2,7 +2,7 @@
 
 One folder that installs Dabloons into every agent harness. Everything points at the hosted MCP server `https://dabloons.net/mcp`. Connecting signs you in with OAuth and creates a new Dabloons agent on your account. A token from `npx dabloons login` also works as `Authorization: Bearer <token>`.
 
-This folder is meant to be published as its own public repo (`randall-inc/dabloons-integrations` in the manifests; change `repository` everywhere if it lands somewhere else).
+Published as its own repo, [randall-inc/dabloons-integrations](https://github.com/randall-inc/dabloons-integrations), mirrored from the `integrations/` folder of [randall-inc/dabloons](https://github.com/randall-inc/dabloons). Change things there; the mirror is updated with `git subtree split --prefix=integrations`.
 
 | Path | Used by |
 |---|---|
@@ -91,7 +91,6 @@ Set `DABLOONS_API_TOKEN` (from `npx dabloons login`). The registry is served fro
 
 Do these after the hosted `/mcp` endpoint with OAuth is live and this folder is a public repo.
 
-- [ ] **Public repo**: publish this folder as `randall-inc/dabloons-integrations` (or update `repository` in every manifest).
 - [ ] **Claude directory** (connector + plugin): https://claude.ai/directory/manage. Answers in `claude/submission.md`.
 - [ ] **OpenAI plugin directory** (ChatGPT, Codex, dots): https://platform.openai.com/plugins. Verify your identity or business, serve the domain token at `https://dabloons.net/.well-known/openai-apps-challenge`, upload a ZIP of this folder, connect `https://dabloons.net/mcp`, add reviewer credentials (no email codes allowed, so reviewers need another sign-in path), record a demo video and replace `demo_recording_url` in `plugin.json` and `.codex-plugin/plugin.json`. Run the 5 positive test cases with the test account first.
 - [ ] **Cursor Marketplace** (also Grok Bot): https://cursor.com/marketplace/publish. Every listing and update is reviewed by hand.
