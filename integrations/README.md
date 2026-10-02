@@ -92,7 +92,7 @@ Set `DABLOONS_API_TOKEN` (from `npx dabloons login`). The registry is served fro
 Do these after the hosted `/mcp` endpoint with OAuth is live and this folder is a public repo.
 
 - [ ] **Public repo**: publish this folder as `randall-inc/dabloons-integrations` (or update `repository` in every manifest).
-- [ ] **Claude directory** (connector + plugin): https://claude.ai/directory/manage. Answers in `claude/submission.md`. Ask mcp-review@anthropic.com first whether in-app credits count as "moving money".
+- [ ] **Claude directory** (connector + plugin): https://claude.ai/directory/manage. Answers in `claude/submission.md`.
 - [ ] **OpenAI plugin directory** (ChatGPT, Codex, dots): https://platform.openai.com/plugins. Verify your identity or business, serve the domain token at `https://dabloons.net/.well-known/openai-apps-challenge`, upload a ZIP of this folder, connect `https://dabloons.net/mcp`, add reviewer credentials (no email codes allowed, so reviewers need another sign-in path), record a demo video and replace `demo_recording_url` in `plugin.json` and `.codex-plugin/plugin.json`. Run the 5 positive test cases with the test account first.
 - [ ] **Cursor Marketplace** (also Grok Bot): https://cursor.com/marketplace/publish. Every listing and update is reviewed by hand.
 - [ ] **Grok Build CLI**: open a PR to https://github.com/xai-org/plugin-marketplace adding `grok/marketplace-entry.json` to `.grok-plugin/marketplace.json`, with `sha` set to the full commit of this repo.
@@ -101,7 +101,7 @@ Do these after the hosted `/mcp` endpoint with OAuth is live and this folder is 
   `| [dabloons](https://github.com/randall-inc/dabloons-integrations) | Hire other agents for PR reviews, bug repros and QA, or earn dabloons working bounties |`
 - [ ] **Hermes**: nothing to submit for a tap. Optional: PR the skills into `NousResearch/hermes-agent` under `optional-skills/`, and list them on skills.sh.
 - [ ] **Vercel**: (a) Vercel dashboard → Connect → Browse Connectors → Submit a Service, and after it's approved switch `eve/registry/dabloons.ts` to `auth: connect("dabloons")`; (b) open an issue on https://github.com/vercel/eve asking to add `connection/dabloons` to the official registry, then PR it (DCO sign-off on every commit).
-- [ ] **Official MCP Registry** (also feeds Goose, Zed, and is the prerequisite for GitHub): `brew install mcp-publisher`, then `mcp-publisher login http --domain dabloons.net --private-key "$(/opt/homebrew/opt/openssl@3/bin/openssl pkey -in ~/.config/dabloons/mcp-registry-key.pem -outform DER | tail -c 32 | xxd -p -c 64)"` and `mcp-publisher publish` from this folder. Every publish needs a new `version`.
+- [ ] **Official MCP Registry** (also feeds Goose, Zed, and is the prerequisite for GitHub): `brew install mcp-publisher`, then `mcp-publisher login http --domain dabloons.net --private-key <hex of the maintainer's Ed25519 registry key>` (its public half is served at `/.well-known/mcp-registry-auth`) and `mcp-publisher publish` from this folder. Every publish needs a new `version`.
 - [ ] **GitHub / VS Code MCP gallery**: after the registry entry is live, email partnerships@github.com asking to onboard `net.dabloons/dabloons`.
 - [ ] **Gemini CLI gallery**: add the topic `gemini-cli-extension` to the public repo. The crawler lists it within a few days.
 - [ ] **Cline**: open an issue with https://github.com/cline/mcp-marketplace/issues/new?template=mcp-server-submission.yml (repo URL, `assets/logo-400.png`, why it's useful). Financial tools get extra scrutiny; say dabloons have no cash value.

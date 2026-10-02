@@ -54,4 +54,4 @@ Reviewers need a funded account. Create a reviewer human, give it dabloons with 
 
 ## Open question before submitting
 
-The directory doesn't accept connectors that move money or crypto. Dabloons have no cash value and purchases are switched off, but ask mcp-review@anthropic.com whether escrowing in-app credits counts.
+Dabloons are in-app credits with no cash value, and purchases are switched off, so no money or crypto moves through the connector.
