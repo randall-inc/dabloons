@@ -1,12 +1,12 @@
-import { toast } from 'sonner'
-import { Button } from '@/components/ui/button'
+import { toast } from '@/components/ui/8bit/toast'
+import { Button } from '@/components/ui/8bit/button'
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
-} from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
+} from '@/components/ui/8bit/dialog'
+import { Input } from '@/components/ui/8bit/input'
 
 /** Shows a freshly issued agent API token. The server never shows it again. */
 export function TokenDialog({
@@ -26,8 +26,8 @@ export function TokenDialog({
         <DialogHeader>
           <DialogTitle>Save this token</DialogTitle>
         </DialogHeader>
-        <div className='flex gap-2'>
-          <Input readOnly value={token ?? ''} className='font-mono' />
+        <div className='flex items-center gap-4'>
+          <Input readOnly value={token ?? ''} className='flex-1 font-mono' />
           <Button onClick={copy}>Copy</Button>
         </div>
       </DialogContent>

@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
-import { toast } from 'sonner'
+import { toast } from '@/components/ui/8bit/toast'
 import { api, session, useMe } from '@/lib/api'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
+import { Button } from '@/components/ui/8bit/button'
+import { Input } from '@/components/ui/8bit/input'
+import { Label } from '@/components/ui/8bit/label'
 
 export const Route = createFileRoute('/dashboard/settings')({
   component: Settings,
@@ -48,7 +48,7 @@ function Settings() {
   return (
     <>
       <h1>Settings</h1>
-      <div className='grid max-w-md gap-6'>
+      <div className='grid max-w-xl gap-6'>
         <div className='grid gap-2'>
           <Label htmlFor='email'>Email</Label>
           <Input id='email' readOnly value={me.email} />
@@ -61,9 +61,10 @@ function Settings() {
           }}
         >
           <Label htmlFor='handle'>Handle</Label>
-          <div className='flex gap-2'>
+          <div className='flex items-center gap-4'>
             <Input
               id='handle'
+              className='flex-1'
               required
               value={handle}
               onChange={(e) => setHandle(e.target.value)}
@@ -75,8 +76,8 @@ function Settings() {
         </form>
         <div className='grid gap-2'>
           <Label htmlFor='referral'>Referral link</Label>
-          <div className='flex gap-2'>
-            <Input id='referral' readOnly value={referralLink} />
+          <div className='flex items-center gap-4'>
+            <Input id='referral' readOnly value={referralLink} className='flex-1' />
             <Button
               variant='outline'
               onClick={async () => {
@@ -97,13 +98,13 @@ function Settings() {
             }}
           >
             <Label htmlFor='referral-code'>Referral code</Label>
-            <div className='flex gap-2'>
+            <div className='flex items-center gap-4'>
               <Input
                 id='referral-code'
                 required
                 autoComplete='off'
                 spellCheck={false}
-                className='uppercase'
+                className='flex-1 uppercase'
                 value={code}
                 onChange={(e) => setCode(e.target.value)}
               />

@@ -1,11 +1,11 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useBalanceHistory, useMe } from '@/lib/api'
 import { formatWhole } from '@/lib/utils'
-import { Button } from '@/components/ui/button'
+import { Button } from '@/components/ui/8bit/button'
 import { BuyDialog } from '@/components/buy-dialog'
 import { PURCHASES_ENABLED } from '../../../../shared/pricing'
 import { TransferDialog } from '@/components/transfer-dialog'
-import { type StatCardData, StatCards } from '@/vendor/spectrumui/stat-cards'
+import { type StatCardData, StatCards } from '@/components/stat-cards'
 
 // A trend needs two days; until then the tile shows just the number.
 function tile(label: string, values: number[]): StatCardData {

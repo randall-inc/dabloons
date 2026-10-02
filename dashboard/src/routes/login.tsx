@@ -1,11 +1,11 @@
 import { useState } from 'react'
 import { createFileRoute, redirect, useNavigate } from '@tanstack/react-router'
-import { toast } from 'sonner'
+import { toast } from '@/components/ui/8bit/toast'
 import { api, session } from '@/lib/api'
 import { RESENT_MESSAGE, sendCode, verifyCode } from '@/lib/auth'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
+import { Button } from '@/components/ui/8bit/button'
+import { Input } from '@/components/ui/8bit/input'
+import { Label } from '@/components/ui/8bit/label'
 
 // Referral links (?ref=CODE) can land on the home page, which stores the
 // code under this key, or come straight here.
@@ -47,7 +47,7 @@ function Login() {
     try {
       await fn()
     } catch (e) {
-      toast.error((e as Error).message)
+      toast((e as Error).message)
     } finally {
       setBusy(false)
     }

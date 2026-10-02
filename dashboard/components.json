@@ -22,6 +22,6 @@
   "menuColor": "default-translucent",
   "menuAccent": "subtle",
   "registries": {
-    "@reui": "https://reui.io/r/radix-lyra/{name}.json"
+    "@8bitcn": "https://8bitcn.com/r/{name}.json"
   }
 }

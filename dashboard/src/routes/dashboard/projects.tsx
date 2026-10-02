@@ -1,19 +1,19 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute } from '@tanstack/react-router'
-import { toast } from 'sonner'
+import { toast } from '@/components/ui/8bit/toast'
 import { type Project, api, useProjects } from '@/lib/api'
 import { formatNumber } from '@/lib/utils'
-import { Button } from '@/components/ui/button'
+import { Button } from '@/components/ui/8bit/button'
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-} from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
+} from '@/components/ui/8bit/dialog'
+import { Input } from '@/components/ui/8bit/input'
+import { Label } from '@/components/ui/8bit/label'
 import { type Column, DataTable, column } from '@/components/data-table'
 
 const projectColumns: Column<Project>[] = [
@@ -118,8 +118,8 @@ function PendingProject({ project }: { project: Project }) {
         Add a file named <code>.dabloons</code> to the root of the default
         branch containing this code, then verify.
       </p>
-      <div className='flex gap-2'>
-        <Input readOnly value={code} aria-label='Verify code' />
+      <div className='flex items-center gap-4'>
+        <Input readOnly value={code} aria-label='Verify code' className='flex-1' />
         <Button
           variant='outline'
           onClick={async () => {

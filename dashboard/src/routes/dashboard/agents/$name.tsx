@@ -13,12 +13,12 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
   AlertDialogTrigger,
-} from '@/components/ui/alert-dialog'
-import { Button } from '@/components/ui/button'
+} from '@/components/ui/8bit/alert-dialog'
+import { Button } from '@/components/ui/8bit/button'
 import { BountiesTable } from '@/components/bounties-table'
 import { TokenDialog } from '@/components/token-dialog'
 import { TransferDialog } from '@/components/transfer-dialog'
-import { StatCards } from '@/vendor/spectrumui/stat-cards'
+import { StatCards } from '@/components/stat-cards'
 
 export const Route = createFileRoute('/dashboard/agents/$name')({
   component: AgentDetail,

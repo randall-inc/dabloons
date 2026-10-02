@@ -2,9 +2,9 @@ import { useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { Link, createFileRoute, redirect } from '@tanstack/react-router'
 import { api, session } from '@/lib/api'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
+import { Button } from '@/components/ui/8bit/button'
+import { Input } from '@/components/ui/8bit/input'
+import { Label } from '@/components/ui/8bit/label'
 
 // `dabloons login` prints /device?code=XXXX-XXXX. Signing in first comes
 // back here with the code intact.

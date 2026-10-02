@@ -3,22 +3,41 @@ import {
   type ColumnDef,
   type PaginationState,
   type SortingState,
+  createPaginatedRowModel,
+  createSortedRowModel,
+  flexRender,
+  rowPaginationFeature,
+  rowSortingFeature,
+  sortFn_alphanumeric,
+  sortFn_basic,
+  sortFn_text,
+  tableFeatures,
   useTable,
 } from '@tanstack/react-table'
+import { cn } from '@/lib/utils'
+import { Button } from '@/components/ui/8bit/button'
 import {
-  DataGrid,
-  DataGridContainer,
-  type DataGridFeatures,
-  dataGridFeatures,
-} from '@/components/reui/data-grid/data-grid'
-import { DataGridColumnHeader } from '@/components/reui/data-grid/data-grid-column-header'
-import { DataGridPagination } from '@/components/reui/data-grid/data-grid-pagination'
-import { DataGridTable } from '@/components/reui/data-grid/data-grid-table'
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/8bit/table'
 
 // TanStack's RowData: any plain object row.
 type Row = Record<string, any>
 
-export type Column<T extends Row> = ColumnDef<DataGridFeatures, T>
+// "auto" sorting picks one of these by the first row's value.
+const features = tableFeatures({
+  rowSortingFeature,
+  rowPaginationFeature,
+  sortedRowModel: createSortedRowModel(),
+  paginatedRowModel: createPaginatedRowModel(),
+  sortFns: { alphanumeric: sortFn_alphanumeric, basic: sortFn_basic, text: sortFn_text },
+})
+
+export type Column<T extends Row> = ColumnDef<typeof features, T>
 
 const PAGE_SIZE = 50
 
@@ -32,19 +51,34 @@ export function column<T extends Row>(
   value: (row: T) => string | number,
   opts: { render?: (row: T) => React.ReactNode; align?: 'right' } = {}
 ): Column<T> {
-  const right = opts.align === 'right' ? 'text-right [&>div]:justify-end' : undefined
+  const right = opts.align === 'right'
   return {
     id,
     accessorFn: value,
-    header: ({ column }) => <DataGridColumnHeader title={title} column={column} />,
-    cell: ({ row }) => (opts.render ?? value)(row.original),
+    header: ({ column }) => {
+      const sorted = column.getIsSorted()
+      return (
+        <button
+          type='button'
+          className={cn('inline-flex w-full items-center gap-1', right && 'justify-end')}
+          onClick={column.getToggleSortingHandler()}
+        >
+          {title}
+          <span aria-hidden className='w-3'>
+            {sorted === 'asc' ? '▲' : sorted === 'desc' ? '▼' : ''}
+          </span>
+        </button>
+      )
+    },
+    cell: ({ row }) => (
+      <div className={cn(right && 'text-right')}>{(opts.render ?? value)(row.original)}</div>
+    ),
     enableSorting: true,
-    meta: { headerClassName: right, cellClassName: right },
   }
 }
 
 /**
- * ReUI data grid with sortable columns. Pages at 50 rows; the page controls
+ * 8bitcn table with sortable columns. Pages at 50 rows; the page controls
  * only appear when there's more than one page.
  */
 export function DataTable<T extends Row>({
@@ -66,7 +100,7 @@ export function DataTable<T extends Row>({
     pageSize: PAGE_SIZE,
   })
   const table = useTable({
-    features: dataGridFeatures,
+    features,
     columns,
     data,
     getRowId,
@@ -74,24 +108,69 @@ export function DataTable<T extends Row>({
     onSortingChange: setSorting,
     onPaginationChange: setPagination,
   })
+  const rows = table.getRowModel().rows
 
   return (
-    <DataGrid
-      table={table}
-      recordCount={data.length}
-      emptyMessage={emptyMessage}
-      onRowClick={onRowClick}
-      tableLayout={{ width: 'auto' }}
-    >
-      <div className='grid gap-2.5'>
-        <DataGridContainer>
-          <DataGridTable />
-        </DataGridContainer>
-        {data.length > PAGE_SIZE && (
-          // Page size is fixed, so hide ReUI's rows-per-page picker (first child).
-          <DataGridPagination sizes={[PAGE_SIZE]} className='*:first:hidden' />
-        )}
-      </div>
-    </DataGrid>
+    <div className='grid gap-4'>
+      <Table>
+        <TableHeader>
+          {table.getHeaderGroups().map((group) => (
+            <TableRow key={group.id}>
+              {group.headers.map((header) => (
+                <TableHead key={header.id}>
+                  {flexRender(header.column.columnDef.header, header.getContext())}
+                </TableHead>
+              ))}
+            </TableRow>
+          ))}
+        </TableHeader>
+        <TableBody>
+          {rows.length ? (
+            rows.map((row) => (
+              <TableRow
+                key={row.id}
+                className={cn(onRowClick && 'cursor-pointer')}
+                onClick={onRowClick && (() => onRowClick(row.original))}
+              >
+                {row.getAllCells().map((cell) => (
+                  <TableCell key={cell.id} className='whitespace-normal break-words'>
+                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                  </TableCell>
+                ))}
+              </TableRow>
+            ))
+          ) : (
+            <TableRow>
+              <TableCell colSpan={columns.length} className='h-24 text-center text-muted-foreground'>
+                {emptyMessage}
+              </TableCell>
+            </TableRow>
+          )}
+        </TableBody>
+      </Table>
+      {data.length > PAGE_SIZE && (
+        <div className='flex items-center justify-end gap-4 retro text-xs'>
+          <span>
+            Page {pagination.pageIndex + 1} of {table.getPageCount()}
+          </span>
+          <Button
+            variant='outline'
+            size='sm'
+            onClick={() => table.previousPage()}
+            disabled={!table.getCanPreviousPage()}
+          >
+            Prev
+          </Button>
+          <Button
+            variant='outline'
+            size='sm'
+            onClick={() => table.nextPage()}
+            disabled={!table.getCanNextPage()}
+          >
+            Next
+          </Button>
+        </div>
+      )}
+    </div>
   )
 }

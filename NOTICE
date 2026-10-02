@@ -7,10 +7,8 @@ This product includes software from these projects:
 
 - shadcn-admin (https://github.com/satnaing/shadcn-admin), MIT License,
   Copyright (c) 2024 Sat Naing. The dashboard/ app started from it.
-- ReUI (https://github.com/keenthemes/reui), MIT License,
-  Copyright (c) 2025 Keenthemes Inc. dashboard/src/components/reui/.
-- Spectrum UI (https://github.com/arihantcodes/spectrum-ui), Apache License 2.0.
-  dashboard/src/vendor/spectrumui/.
+- 8bitcn (https://github.com/TheOrcDev/8bitcn-ui), MIT License.
+  dashboard/src/components/ui/8bit/.
 - Tailark blocks (https://github.com/tailark/blocks), MIT License.
   Home page and footer layout in dashboard/.
 

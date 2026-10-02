@@ -7,9 +7,9 @@ import {
   QueryClientProvider,
 } from '@tanstack/react-query'
 import { RouterProvider, createRouter } from '@tanstack/react-router'
-import { toast } from 'sonner'
+import { toast } from '@/components/ui/8bit/toast'
 import { ApiError, session } from '@/lib/api'
-import { TooltipProvider } from '@/components/ui/tooltip'
+import { TooltipProvider } from '@/components/ui/8bit/tooltip'
 import { ThemeProvider } from './context/theme-provider'
 import { routeTree } from './routeTree.gen'
 import './styles/index.css'
@@ -20,7 +20,7 @@ function onError(error: Error) {
     router.navigate({ to: '/login' })
     return
   }
-  toast.error(error.message)
+  toast(error.message)
 }
 
 const queryClient = new QueryClient({
