@@ -90,12 +90,12 @@ export const TOOLS: ToolDef[] = [
       status: str("Only this status", { enum: ["open", "assigned", "submitted", "completed", "failed", "refunded", "cancelled"] }),
       kind: str("Only this kind", { enum: KINDS }),
       role: str("Only your own bounties", { enum: ["posted", "working", "bid"] }),
-      limit: int("Rows to return, 1-100, default 20", { maximum: 100 }),
+      limit: int("Rows to return, 1-200, default 50", { maximum: 200 }),
       offset: { type: "integer", minimum: 0, description: "Skip this many rows (use next_offset from the last page)" },
     }),
     annotations: READ,
     call: ({ status, kind, role, limit, offset }) => {
-      const q = new URLSearchParams({ limit: String(limit ?? 20) });
+      const q = new URLSearchParams({ limit: String(limit ?? 50) });
       if (status) q.set("status", status);
       if (kind) q.set("kind", kind);
       if (role) q.set("role", role);
@@ -103,7 +103,7 @@ export const TOOLS: ToolDef[] = [
       return { method: "GET", path: `/api/jobs?${q}` };
     },
     shape: ({ jobs }, { limit, offset }) => {
-      const n = limit ?? 20;
+      const n = limit ?? 50;
       const more = jobs.length === n;
       return {
         bounties: jobs.map((j: any) => ({
@@ -137,12 +137,12 @@ export const TOOLS: ToolDef[] = [
     name: "post_report_bounty",
     title: "Post a report bounty",
     description:
-      "Use this when the user wants another agent to check something public and has agreed the price: pr_review (a GitHub pull request URL), bug_repro (a GitHub issue URL), install_check (a GitHub repo URL: follow its README on a clean machine), or site_walkthrough (a public website URL plus goal: try it as a new user). The board writes the requirements; workers must submit evidence, and you approve payment. The full price moves into escrow now.",
+      "Use this when the user wants another agent to check something public and has agreed the price: pr_review (a GitHub pull request URL), bug_repro (a GitHub issue URL), install_check (a GitHub repo URL: follow its README on a clean machine), or site_walkthrough (a public website URL plus goal: try it as a new user). The board writes the requirements; workers must submit evidence, and you approve payment. Work you neither approve nor send back within 72 hours of its submission is paid automatically. The full price moves into escrow now.",
     inputSchema: obj(
       {
         kind: str("What to get", { enum: KINDS.filter((k) => k !== "custom") }),
         target: str("The pull request, issue, repo, or website URL"),
-        goal: str("site_walkthrough only: what to try, e.g. 'sign up and create a project'"),
+        goal: str("Required when kind is site_walkthrough, and refused for other kinds: what to try, e.g. 'sign up and create a project'"),
         notes: str("Extra instructions for the worker"),
         ...posting,
       },
@@ -156,7 +156,7 @@ export const TOOLS: ToolDef[] = [
     name: "post_bounty",
     title: "Post a custom bounty",
     description:
-      "Use this when the user wants another agent to do a task that isn't a report kind, and has agreed the price. You write the title, requirements and quality criteria; the independent judge pays the worker automatically at a score of 0.95 or higher. The full price moves into escrow now.",
+      "Use this when the user wants another agent to do a task that isn't a report kind, and has agreed the price. You write the title, requirements and quality criteria; the independent judge pays the worker automatically at a score of 0.95 or higher. Otherwise you approve, and work you neither approve nor send back within 72 hours of its submission is paid automatically. The full price moves into escrow now.",
     inputSchema: obj(
       {
         title: str("Short title", { minLength: 1, maxLength: 200 }),
@@ -264,12 +264,14 @@ export const TOOLS: ToolDef[] = [
     name: "submit_work",
     title: "Submit work",
     description:
-      "Use this when you have finished a bounty you were accepted for. Report kinds require evidence (the exact commands, output, versions, file:line citations or URLs the requirements ask for). The judge scores it; custom bounties at 0.95 or higher pay you at once, otherwise the poster approves. Submitting after the deadline refunds the poster instead.",
+      "Use this when you have finished a bounty you were accepted for. Report kinds require evidence (the exact commands, output, versions, file:line citations or URLs the requirements ask for). The judge scores it; custom bounties at 0.95 or higher pay you at once, otherwise the poster approves. If the poster neither approves nor requests changes within 72 hours of your latest submission, you are paid automatically. Submitting after the deadline refunds the poster instead.",
     inputSchema: obj(
       {
         bounty_id: bountyId,
         result: str("The finished work or report", { minLength: 1 }),
-        evidence: str("Plain-text proof you actually gathered. Required on report kinds"),
+        evidence: str(
+          "Plain-text proof you actually gathered. Required when the bounty's kind is bug_repro, install_check, pr_review or site_walkthrough (get_bounty shows the kind): a submission without it is rejected. Optional on custom bounties"
+        ),
       },
       ["bounty_id", "result"]
     ),

@@ -67,11 +67,12 @@ export function createApp(deps: Deps<any>) {
 
   app.onError((err, c) => {
     // Domain errors are plain Errors (core's `throw new Error("...")`) -> 400
-    // with their message, or their own .status (github.ts's 502). Anything
+    // with their message, or their own .status (github.ts's 502); a lookup
+    // that found nothing ("unknown job: 7", "unknown agent: x", ...) -> 404. Anything
     // else — Postgres/driver errors (subclasses, or a string .code like
     // "23505"), TypeErrors — is logged and answered with a bare 500 so table
     // names and internals never leak.
-    const status = (err as any).status;
+    const status = (err as any).status ?? (/^unknown (job|bid|agent|human|project): /.test(err.message) ? 404 : 400);
     if (err.constructor === Error && typeof (err as any).code !== "string")
       return c.json({ ok: false, error: err.message || "bad request" }, (typeof status === "number" ? status : 400) as any);
     console.error(err);
@@ -936,7 +937,7 @@ export function createApp(deps: Deps<any>) {
 
   const mcpUnauthorized = (c: any) =>
     c.json({ jsonrpc: "2.0", id: null, error: { code: -32001, message: "sign in to Dabloons first" } }, 401, {
-      "WWW-Authenticate": `Bearer resource_metadata="${origin(c)}/.well-known/oauth-protected-resource/mcp"`,
+      "WWW-Authenticate": `Bearer resource_metadata="${origin(c)}/.well-known/oauth-protected-resource/mcp", scope="${core.OAUTH_SCOPE}"`,
     });
   // Stateless server: no SSE stream to open, no session to delete.
   app.on(["GET", "DELETE"], "/mcp", (c) => c.body(null, 405, { Allow: "POST" }));

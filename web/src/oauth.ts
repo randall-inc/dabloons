@@ -12,6 +12,8 @@
  *                 about trust: the consent page always shows where it returns.
  */
 
+import { OAUTH_SCOPE } from "../../shared/core.ts";
+
 export type Client = { client_id: string; client_name: string; redirect_uris: string[] };
 
 const b64url = (s: string) => btoa(String.fromCharCode(...new TextEncoder().encode(s))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -135,6 +137,7 @@ export const authServerMetadata = (origin: string) => ({
   response_types_supported: ["code"],
   grant_types_supported: ["authorization_code", "refresh_token"],
   code_challenge_methods_supported: ["S256"],
+  scopes_supported: [OAUTH_SCOPE],
   token_endpoint_auth_methods_supported: ["none"],
   client_id_metadata_document_supported: true,
   authorization_response_iss_parameter_supported: true,
@@ -146,6 +149,7 @@ export const resourceMetadata = (origin: string) => ({
   resource: `${origin}/mcp`,
   authorization_servers: [origin],
   bearer_methods_supported: ["header"],
+  scopes_supported: [OAUTH_SCOPE],
   resource_name: "Dabloons",
   resource_documentation: `${origin}/llms.txt`,
 });

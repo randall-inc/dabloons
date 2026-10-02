@@ -67,6 +67,13 @@ function normAgent(a: any) {
   };
 }
 
+// What anyone can see of an agent: an allow-list, like publicJob, so a column
+// added later stays private. human_id is the owning human account's number
+// (public on purpose: it shows which agents share an owner); nothing else
+// about the human (email, handle, balance) is ever public.
+const PUBLIC_AGENT_FIELDS = ["name", "balance", "runs_on", "human_id", "created_at"];
+const publicAgent = (a: any) => Object.fromEntries(PUBLIC_AGENT_FIELDS.map((k) => [k, a[k] ?? null]));
+
 function normHuman(h: any) {
   return {
     id: num(h.id),
@@ -244,6 +251,8 @@ export async function getAgentByToken(db: TxDb, token: string) {
 
 const OAUTH_CODE_TTL_SEC = 600;
 export const OAUTH_ACCESS_TTL_SEC = 3600;
+/** The one OAuth scope: act as the new agent on the board. Every token carries it; there are no narrower ones. */
+export const OAUTH_SCOPE = "agent";
 
 /** A free agent name like "claude-x7k2" from a client's display name. */
 export async function suggestAgentName(db: TxDb, clientName: string) {
@@ -301,7 +310,7 @@ async function issueGrantTokens(tx: TxDb, grant: { id?: number; agentName: strin
     await tx.query("UPDATE oauth_grants SET access_hash = ?, access_expires_at = ?, refresh_hash = ? WHERE id = ?", [
       await hashToken(access), expires, await hashToken(refresh), grant.id,
     ]);
-  return { access_token: access, token_type: "Bearer", expires_in: OAUTH_ACCESS_TTL_SEC, refresh_token: refresh };
+  return { access_token: access, token_type: "Bearer", expires_in: OAUTH_ACCESS_TTL_SEC, refresh_token: refresh, scope: OAUTH_SCOPE };
 }
 
 /** Redeem a code once: checks client, redirect_uri and PKCE, creates the agent, issues tokens. Also returns the new agent and its human. */
@@ -365,8 +374,8 @@ export async function getEscrowed(db: TxDb, name: string): Promise<number> {
 }
 
 export async function listAgents(db: TxDb) {
-  const rows = await db.query("SELECT name, balance, runs_on, created_at FROM agents ORDER BY name");
-  return rows.map(normAgent);
+  const rows = await db.query(`SELECT ${PUBLIC_AGENT_FIELDS.join(", ")} FROM agents ORDER BY name`);
+  return rows.map((r: any) => publicAgent(normAgent(r)));
 }
 
 /** Identity profile: everything this agent has done, in one place. */
@@ -393,7 +402,7 @@ export async function getAgentProfile(db: TxDb, name: string) {
     return Object.fromEntries(Object.keys(j).map((k) => [k, n[k]]));
   };
   return {
-    ...agent,
+    ...publicAgent(agent),
     posted: posted.map(row),
     worked: worked.map(row),
     bids: bids.map(normBid),
@@ -799,7 +808,8 @@ export async function acceptBid(db: Db, o: { poster: string; jobId: number; bidI
           );
     const bidRows = await tx.query("SELECT * FROM bids WHERE id = ?", [o.bidId]);
     const bid = bidRows[0];
-    if (!bid || (num(bid.job_id) !== o.jobId && !copies.some((c: any) => num(c.id) === num(bid.job_id))))
+    if (!bid) throw new Error(`unknown bid: ${o.bidId}`);
+    if (num(bid.job_id) !== o.jobId && !copies.some((c: any) => num(c.id) === num(bid.job_id)))
       throw new Error(`bid ${o.bidId} is not on job ${o.jobId} or one of its copies`);
     if (bid.status !== "pending") throw new Error(`bid ${o.bidId} is not pending`);
     const bidder = await mustAgent(tx, bid.bidder);
