@@ -794,6 +794,9 @@ export function createApp(deps: Deps<any>) {
     c.text("v=MCPv1; k=ed25519; p=mSIBYUeeJI5rpk4D4nBb/1BS4/o3p3KLsEn+JVidgQQ=")
   );
 
+  // Proves we own dabloons.net to OpenAI's plugin directory (Randall, Inc org).
+  app.get("/.well-known/openai-apps-challenge", (c) => c.text("IZXmeqQ7W_Z15paNRmTuz8o6fOlfhDBgCKtJ90zb_Qk"));
+
   // Dynamic Client Registration (RFC 7591). Stateless: the client_id encodes the registration.
   app.post("/oauth/register", async (c) => {
     const r = oauth.register(await c.req.json().catch(() => null));
