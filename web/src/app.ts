@@ -259,6 +259,30 @@ export function createApp(deps: Deps<any>) {
     return c.json({ ok: true, agent });
   });
 
+  // The shared tail of every sign-in: provision/link the board human for a
+  // verified identity and mint its session.
+  const signIn = async (
+    c: any,
+    who: { id: string; email: string; name?: string },
+    referral_code: unknown
+  ) => {
+    const db = c.get("db");
+    const r = await core.findOrCreateHumanByAuthId(db, {
+      authUserId: who.id,
+      email: who.email,
+      name: who.name,
+      referralCode: referral_code ? String(referral_code) : undefined,
+    });
+    const s = await core.createBoardSession(db, r.human.id);
+    return c.json({
+      ok: true,
+      session_token: s.sessionToken,
+      session_expires: s.sessionExpires,
+      created: r.created,
+      human: await account(db, r.human),
+    });
+  };
+
   // Trade a Neon Auth sign-in for a board session. Idempotent: signing in
   // again returns the same human with created:false. Only a referred first
   // signup earns: pass referral_code to credit both sides 100 dabloons
@@ -302,21 +326,34 @@ export function createApp(deps: Deps<any>) {
       nu = r;
       if (!nu) return c.json({ ok: false, error: "invalid or expired code" }, 401);
     }
-    const db = c.get("db");
-    const r = await core.findOrCreateHumanByAuthId(db, {
-      authUserId: nu.id,
-      email: nu.email,
-      name: nu.name,
-      referralCode: referral_code ? String(referral_code) : undefined,
-    });
-    const s = await core.createBoardSession(db, r.human.id);
-    return c.json({
-      ok: true,
-      session_token: s.sessionToken,
-      session_expires: s.sessionExpires,
-      created: r.created,
-      human: await account(db, r.human),
-    });
+    return signIn(c, nu, referral_code);
+  });
+
+  // Password sign-in for the one app-directory reviewer account (directory
+  // reviewers can't receive our emailed codes). Off (404) unless both the
+  // REVIEWER_EMAIL and REVIEWER_PASSWORD secrets are set. Signs in exactly like
+  // neon-exchange, with the stable identity "reviewer:<email>" standing in
+  // for a Neon user id.
+  app.post("/api/auth/reviewer", async (c) => {
+    const wantEmail = (c.env?.REVIEWER_EMAIL as string | undefined)?.trim().toLowerCase();
+    const wantPassword = c.env?.REVIEWER_PASSWORD as string | undefined;
+    if (!wantEmail || !wantPassword) return c.json({ ok: false, error: "not found" }, 404);
+    const ip = c.req.header("cf-connecting-ip") || "unknown";
+    if (!(await deps.rateLimit(c.env, "reviewer:ip:" + ip, "strict")))
+      return c.json({ ok: false, error: "rate limited — try again in a minute" }, 429, {
+        "Retry-After": "60",
+      });
+    const { email, password, referral_code } = await c.req.json().catch(() => ({} as any));
+    const str = (v: unknown) => (typeof v === "string" ? v : "");
+    // Hash before the constant-time compare so lengths don't leak; both
+    // checks always run, so a wrong email costs the same as a wrong password.
+    const emailOk = safeEqual(
+      await core.hashToken(str(email).trim().toLowerCase()),
+      await core.hashToken(wantEmail)
+    );
+    const passwordOk = safeEqual(await core.hashToken(str(password)), await core.hashToken(wantPassword));
+    if (!emailOk || !passwordOk) return c.json({ ok: false, error: "invalid email or password" }, 401);
+    return signIn(c, { id: "reviewer:" + wantEmail, email: wantEmail }, referral_code);
   });
 
   // Public Neon Auth base URL for the dashboard's sign-in page.

@@ -12,6 +12,8 @@ interface Env {
   STRIPE_WEBHOOK_SECRET?: string;
   NEON_AUTH_BASE_URL?: string;
   GITHUB_TOKEN?: string;
+  REVIEWER_EMAIL?: string;
+  REVIEWER_PASSWORD?: string;
   AUTH_FALLBACK_LIMITER: RateLimit;
   RL_WRITE: RateLimit;
   RL_READ: RateLimit;

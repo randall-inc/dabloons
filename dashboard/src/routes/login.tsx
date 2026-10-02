@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { createFileRoute, redirect, useNavigate } from '@tanstack/react-router'
 import { toast } from 'sonner'
-import { session } from '@/lib/api'
+import { api, session } from '@/lib/api'
 import { RESENT_MESSAGE, sendCode, verifyCode } from '@/lib/auth'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -18,9 +18,14 @@ function safeRedirect(value: unknown): string | undefined {
 }
 
 export const Route = createFileRoute('/login')({
-  validateSearch: (s: Record<string, unknown>): { redirect?: string; ref?: string } => ({
+  // ?password=1: password sign-in, which the Worker allows only for the one
+  // app-directory reviewer account (reviewers can't get our emailed codes).
+  validateSearch: (
+    s: Record<string, unknown>
+  ): { redirect?: string; ref?: string; password?: boolean } => ({
     redirect: safeRedirect(s.redirect),
     ref: typeof s.ref === 'string' ? s.ref : undefined,
+    password: s.password ? true : undefined,
   }),
   beforeLoad: ({ search }) => {
     if (session.get()) throw redirect({ href: search.redirect ?? '/dashboard' })
@@ -33,6 +38,7 @@ function Login() {
   const search = Route.useSearch()
   const [email, setEmail] = useState('')
   const [code, setCode] = useState('')
+  const [password, setPassword] = useState('')
   const [sent, setSent] = useState(false)
   const [busy, setBusy] = useState(false)
 
@@ -47,24 +53,37 @@ function Login() {
     }
   }
 
+  function signedIn(token: string) {
+    session.set(token)
+    localStorage.removeItem(REF_KEY)
+    navigate({ href: search.redirect ?? '/dashboard' })
+  }
+
   const onSubmit = (e: React.FormEvent) => {
     e.preventDefault()
+    const ref = search.ref ?? localStorage.getItem(REF_KEY) ?? undefined
+    if (search.password)
+      return run(async () => {
+        const x = await api<{ session_token: string }>('/auth/reviewer', {
+          email: email.trim(),
+          password,
+          referral_code: ref,
+        })
+        signedIn(x.session_token)
+      })
     if (!sent)
       return run(async () => {
         await sendCode(email.trim())
         setSent(true)
       })
     run(async () => {
-      const ref = search.ref ?? localStorage.getItem(REF_KEY) ?? undefined
       const result = await verifyCode(email.trim(), code.trim(), ref)
       if (typeof result !== 'string') {
         setCode('')
         toast(RESENT_MESSAGE)
         return
       }
-      session.set(result)
-      localStorage.removeItem(REF_KEY)
-      navigate({ href: search.redirect ?? '/dashboard' })
+      signedIn(result)
     })
   }
 
@@ -84,6 +103,19 @@ function Login() {
             onChange={(e) => setEmail(e.target.value)}
           />
         </div>
+        {search.password && (
+          <div className='grid gap-2'>
+            <Label htmlFor='password'>Password</Label>
+            <Input
+              id='password'
+              type='password'
+              autoComplete='current-password'
+              required
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+          </div>
+        )}
         {sent && (
           <div className='grid gap-2'>
             <Label htmlFor='code'>Code</Label>
@@ -99,7 +131,7 @@ function Login() {
           </div>
         )}
         <Button type='submit' disabled={busy}>
-          {sent ? 'Sign in' : 'Send code'}
+          {sent || search.password ? 'Sign in' : 'Send code'}
         </Button>
       </form>
     </main>

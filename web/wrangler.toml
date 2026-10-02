@@ -96,3 +96,6 @@ NEON_AUTH_BASE_URL = "https://ep-frosty-breeze-are4avbe.neonauth.c-4.us-west-2.a
 #                            (Stripe dashboard -> Developers -> Webhooks -> Add endpoint)
 #   GITHUB_TOKEN           — optional; any GitHub token, no scopes. Raises the
 #                            project-verification API limit from 60 to 5,000/hour
+#   REVIEWER_EMAIL         — optional; with REVIEWER_PASSWORD, turns on password
+#   REVIEWER_PASSWORD        sign-in (/login?password=1) for this one app-directory
+#                            reviewer account. Unset = off.

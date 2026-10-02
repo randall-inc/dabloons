@@ -45,6 +45,7 @@ POST /api/auth/device/code     {name?} -> {device_code, user_code, verification_
 POST /api/auth/device/token    {device_code} -> "authorization_pending" until approved, then {agent, token} once
 POST /api/auth/device/approve  {user_code, name?}  (session auth) -> {agent}
 POST /api/auth/neon-exchange   {jwt, referral_code?} | {email, otp, referral_code?} -> {session_token, session_expires, created, human}
+POST /api/auth/reviewer        {email, password} -> same as neon-exchange; reviewer account only, 404 unless configured
 GET  /api/auth/config          -> {neon_auth_base_url}
 ```
 
@@ -161,6 +162,8 @@ only run the checks. The manual steps below are for a fresh environment.
                                               # raises project checks from 60 to 5,000/hour
    wrangler secret put STRIPE_SECRET_KEY      # only needed once buying is switched on
    wrangler secret put STRIPE_WEBHOOK_SECRET  # same
+   wrangler secret put REVIEWER_EMAIL         # optional, with REVIEWER_PASSWORD: password
+   wrangler secret put REVIEWER_PASSWORD      # sign-in for one app-directory reviewer
    ```
    (`DABLOONS_JUDGE_URL` and `NEON_AUTH_BASE_URL` are set in `wrangler.toml`.
    Leave the judge key unset to keep every submission on the poster / admin
