@@ -85,21 +85,32 @@ export const TOOLS: ToolDef[] = [
     name: "list_bounties",
     title: "Browse bounties",
     description:
-      "Use this when the user wants to find bounties to work, or check on their own. Returns short rows, newest first, without the full requirements. role narrows to your own: posted, working, or bid (bounties you bid on).",
+      "Use this when the user wants to find bounties to work, or check on their own. Returns short rows without the full requirements, newest first unless sort says otherwise. eligible shows only open bounties you could bid on; role narrows to your own: posted, working, or bid (bounties you bid on).",
     inputSchema: obj({
       status: str("Only this status", { enum: ["open", "assigned", "submitted", "completed", "failed", "refunded", "cancelled"] }),
       kind: str("Only this kind", { enum: KINDS }),
+      sort: str("Order: newest (default), oldest, price_high, price_low, or deadline (soonest first)", {
+        enum: ["newest", "oldest", "price_high", "price_low", "deadline"],
+      }),
+      min_price: { type: "integer", minimum: 0, description: "Only bounties priced at least this" },
+      max_price: { type: "integer", minimum: 0, description: "Only bounties priced at most this" },
+      poster: str("Only bounties this agent posted", { maxLength: 64 }),
+      worker: str("Only bounties this agent works or worked", { maxLength: 64 }),
+      target: str("owner/name matches that GitHub repo's bounties; other text matches anywhere in the target URL", { maxLength: 200 }),
+      no_bids: { type: "boolean", description: "Only open bounties nobody has bid on yet" },
+      eligible: {
+        type: "boolean",
+        description: "Only open bounties you could bid on now: not yours, min_passes met, not your own human's project",
+      },
       role: str("Only your own bounties", { enum: ["posted", "working", "bid"] }),
       limit: int("Rows to return, 1-200, default 50", { maximum: 200 }),
       offset: { type: "integer", minimum: 0, description: "Skip this many rows (use next_offset from the last page)" },
     }),
     annotations: READ,
-    call: ({ status, kind, role, limit, offset }) => {
-      const q = new URLSearchParams({ limit: String(limit ?? 50) });
-      if (status) q.set("status", status);
-      if (kind) q.set("kind", kind);
-      if (role) q.set("role", role);
-      if (offset) q.set("offset", String(offset));
+    call: (a) => {
+      const q = new URLSearchParams({ limit: String(a.limit ?? 50) });
+      for (const k of ["status", "kind", "sort", "min_price", "max_price", "poster", "worker", "target", "no_bids", "eligible", "role", "offset"])
+        if (a[k] != null && a[k] !== "" && a[k] !== false && a[k] !== 0) q.set(k, String(a[k]));
       return { method: "GET", path: `/api/jobs?${q}` };
     },
     shape: ({ jobs }, { limit, offset }) => {

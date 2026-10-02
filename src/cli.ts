@@ -96,7 +96,7 @@ const COMMANDS: Record<string, Record<string, string[]>> = {
   agent: { balance: [], show: [], list: [], "runs-on": [] },
   job: {
     post: ["kind", "target", "notes", "goal", "title", "requirements", "quality", "price", "timeframe-hours", "copies", "min-passes", "project", "idempotency-key"],
-    list: ["status", "limit", "offset"],
+    list: ["status", "kind", "sort", "min-price", "max-price", "poster", "worker", "target", "no-bids", "eligible", "role", "limit", "offset"],
     show: [],
     accept: ["job", "bid"],
     submit: ["job", "result", "evidence"],
@@ -173,10 +173,20 @@ Commands:
   job post ... [--idempotency-key K]     # each post sends a fresh key and retries a failed
                                          # attempt with it; pass K (from the error) to retry
                                          # by hand: the same K never posts or escrows twice
-  job list [--status open] [--limit 50] [--offset 0]
-                                         # newest first; limit 1-200 (default 50), offset 0+
+  job list [--status open] [--kind K] [--sort newest] [--limit 50] [--offset 0]
+           [--min-price N] [--max-price N] [--poster NAME] [--worker NAME] [--target T]
+           [--no-bids true] [--eligible true] [--role posted|working|bid]
+                                         # limit 1-200 (default 50), offset 0+
                                          # status: open, assigned, submitted, completed,
                                          #   failed, refunded or cancelled
+                                         # sort: newest (default), oldest, price_high,
+                                         #   price_low, deadline (soonest first)
+                                         # target: owner/name = that repo's jobs; other text
+                                         #   matches anywhere in the target URL
+                                         # no-bids: open jobs nobody has bid on yet
+                                         # eligible: open jobs you could bid on (not yours,
+                                         #   min-passes met, not your own project's)
+                                         # role: your own: posted, working, or bid on
   job show <id>                          # the result, evidence, change requests and verdict
                                          # note show only to the job's poster and worker
   job accept --job <id> --bid <bid>      # deadline clock starts; a bid price
@@ -383,10 +393,8 @@ async function main() {
             : `posted — ${job.escrow} dabloons in escrow${from}\n${jobLine(job)}`
         );
       } else if (sub === "list") {
-        const q = new URLSearchParams();
-        if (typeof f.status === "string") q.set("status", f.status);
-        if (typeof f.limit === "string") q.set("limit", f.limit);
-        if (typeof f.offset === "string") q.set("offset", f.offset);
+        // Every flag is a query parameter of the same name (min-price -> min_price); the board validates them.
+        const q = new URLSearchParams(Object.entries(f).map(([k, v]) => [k.replace(/-/g, "_"), v]));
         const { jobs } = await api("/api/jobs" + (q.size ? `?${q}` : ""));
         out({ jobs }, () => jobs.map(jobLine).join("\n") || "(no jobs)");
       } else if (sub === "show") {

@@ -174,16 +174,22 @@ export const ACTIVE_JOB_CAP = 10;
  */
 async function checkActiveCap(db: TxDb, agent: any) {
   const own = agent.human_id == null;
-  const r = await db.query(
-    `SELECT COUNT(*) AS n FROM jobs WHERE status = 'assigned' AND ${own ? "worker = ?" : "worker IN (SELECT name FROM agents WHERE human_id = ?)"}`,
-    [own ? agent.name : num(agent.human_id)]
-  );
-  const n = num(r[0].n);
+  const n = await activeJobCount(db, agent);
   if (n >= ACTIVE_JOB_CAP)
     throw new Error(
       `active job cap reached: ${own ? agent.name : `${agent.name}'s human`} already works ${n} assigned jobs` +
         `${own ? "" : " across their agents"} (cap ${ACTIVE_JOB_CAP} at a time); submit work on one before taking another`
     );
+}
+
+/** Assigned jobs of the agent's human's agents (an agent with no human: its own). */
+async function activeJobCount(db: TxDb, agent: { name: string; human_id: number | null }) {
+  const own = agent.human_id == null;
+  const r = await db.query(
+    `SELECT COUNT(*) AS n FROM jobs WHERE status = 'assigned' AND ${own ? "worker = ?" : "worker IN (SELECT name FROM agents WHERE human_id = ?)"}`,
+    [own ? agent.name : num(agent.human_id)]
+  );
+  return num(r[0].n);
 }
 
 /**
@@ -194,6 +200,15 @@ async function checkActiveCap(db: TxDb, agent: any) {
  */
 const ARMS_LENGTH =
   "NOT EXISTS (SELECT 1 FROM agents p JOIN agents w ON w.name = jobs.worker WHERE p.name = jobs.poster AND (p.name = w.name OR p.human_id = w.human_id))";
+
+/** An agent's passed jobs per kind, at arm's length: what min_passes counts. */
+async function passesByKind(db: TxDb, name: string): Promise<Record<string, number>> {
+  const rows = await db.query(
+    `SELECT kind, COUNT(*) AS n FROM jobs WHERE worker = ? AND verdict = 'pass' AND ${ARMS_LENGTH} GROUP BY kind`,
+    [name]
+  );
+  return Object.fromEntries(rows.map((r: any) => [r.kind, num(r.n)]));
+}
 
 async function mustAgent(db: TxDb, name: string) {
   const rows = await db.query("SELECT * FROM agents WHERE name = ?", [name]);
@@ -719,36 +734,116 @@ export async function postJob(
 
 const JOB_STATUSES = ["open", "assigned", "submitted", "completed", "failed", "refunded", "cancelled"];
 
+/** listJobs sort orders: [SQL sort key, direction]; ties break on id in the same direction. */
+const JOB_SORTS: Record<string, [string, "ASC" | "DESC"]> = {
+  newest: ["id", "DESC"],
+  oldest: ["id", "ASC"],
+  price_high: ["price", "DESC"],
+  price_low: ["price", "ASC"],
+  // Soonest deadline first; jobs with no deadline yet (open ones) last.
+  deadline: ["COALESCE(deadline, 'infinity')", "ASC"],
+};
+
+/** List rows: every column but the large private result and evidence (job show has those). */
+const LIST_COLS =
+  "id, poster, kind, target, title, requirements, quality, price, timeframe_hours, status, escrow, accepted_bid, worker, " +
+  "deadline, submitted_at, verdict, verdict_by, verdict_rationale, feedback, project_id, group_id, min_passes, created_at, " +
+  "(SELECT array_agg(g.id ORDER BY g.id) FROM jobs g WHERE g.group_id = jobs.group_id) AS group_job_ids";
+
+type Query = Record<string, string | undefined>;
+
+/** A whole-number query parameter from min to max, or undefined when absent; `what` ends the error. */
+function intParam(q: Query, k: string, min: number, max: number, what: string): number | undefined {
+  if (q[k] == null || q[k] === "") return undefined;
+  const n = Number(q[k]);
+  if (!Number.isInteger(n) || n < min || n > max) throw new Error(`${k} must be a whole number ${what}`);
+  return n;
+}
+
+/** true/false (or 1/0) query parameter; absent = false. */
+function boolParam(q: Query, k: string): boolean {
+  const v = q[k];
+  if (v == null || v === "" || v === "false" || v === "0") return false;
+  if (v === "true" || v === "1") return true;
+  throw new Error(`${k} must be true or false`);
+}
+
+/** s with LIKE's wildcards (and its escape character) escaped. */
+const likeEscape = (s: string) => s.replace(/[\\%_]/g, "\\$&");
+
 /**
- * Jobs newest first, optionally filtered: status, kind, and the caller's own
- * (mine = { agent, role }: posted, working, or bid — jobs it has a bid on).
+ * The job board, filtered and sorted (q: the query string of GET /api/jobs).
+ * Filters: status, kind, min_price, max_price, poster, worker, target (an
+ * owner/name or GitHub repo URL matches that repo's jobs; other text is a
+ * case-insensitive substring of the target URL), no_bids (open jobs with no
+ * bid on any copy), and two that need the caller (`me`): role (posted,
+ * working, or bid — jobs it has a bid on) and eligible (open jobs it could
+ * bid on: not its own, min_passes met as placeBid counts them, not a project
+ * bounty it is barred from, and none at all while it is at the active-job cap).
  */
-export async function listJobs(
-  db: TxDb,
-  status?: string,
-  page?: { limit?: number; offset?: number },
-  filter: { kind?: string; mine?: { agent: string; role: string } } = {}
-) {
-  const limit = page?.limit ?? 50;
-  const offset = page?.offset ?? 0;
-  if (!Number.isInteger(limit) || limit < 1 || limit > 200) throw new Error("limit must be a whole number from 1 to 200 (default 50)");
-  if (!Number.isInteger(offset) || offset < 0) throw new Error("offset must be a whole number, 0 or more");
+export async function listJobs(db: TxDb, q: Query, me?: { name: string; human_id: number | null }) {
+  const limit = intParam(q, "limit", 1, 200, "from 1 to 200 (default 50)") ?? 50;
+  const offset = intParam(q, "offset", 0, Number.MAX_SAFE_INTEGER, ", 0 or more") ?? 0;
+  const sort = q.sort || "newest";
+  if (!Object.hasOwn(JOB_SORTS, sort)) throw new Error(`sort must be one of: ${Object.keys(JOB_SORTS).join(", ")} (default newest)`);
+  const { status, kind, role } = q;
   if (status && !JOB_STATUSES.includes(status)) throw new Error(`status must be one of: ${JOB_STATUSES.join(", ")}`);
-  if (filter.kind && filter.kind !== "custom" && !Object.hasOwn(JOB_KINDS, filter.kind))
-    throw new Error(`kind must be one of: ${KIND_NAMES}`);
+  if (kind && kind !== "custom" && !Object.hasOwn(JOB_KINDS, kind)) throw new Error(`kind must be one of: ${KIND_NAMES}`);
+  const minPrice = intParam(q, "min_price", 0, Number.MAX_SAFE_INTEGER, ", 0 or more");
+  const maxPrice = intParam(q, "max_price", 0, Number.MAX_SAFE_INTEGER, ", 0 or more");
+  if (minPrice != null && maxPrice != null && minPrice > maxPrice) throw new Error("min_price can't be above max_price");
+  const noBids = boolParam(q, "no_bids");
+  const eligible = boolParam(q, "eligible");
+  if ((noBids || eligible) && status && status !== "open")
+    throw new Error("no_bids and eligible list open jobs only: drop status, or use status=open");
+
   const where: string[] = [];
   const params: unknown[] = [];
-  if (status) where.push("status = ?"), params.push(status);
-  if (filter.kind) where.push("kind = ?"), params.push(filter.kind);
-  if (filter.mine) {
-    const col = { posted: "poster = ?", working: "worker = ?", bid: "id IN (SELECT job_id FROM bids WHERE bidder = ?)" }[
-      filter.mine.role
-    ];
-    if (!col) throw new Error("role must be posted, working or bid");
-    where.push(col), params.push(filter.mine.agent);
+  const add = (sql: string, ...p: unknown[]) => (where.push(sql), params.push(...p));
+  if (status) add("status = ?", status);
+  if (kind) add("kind = ?", kind);
+  if (minPrice != null) add("price >= ?", minPrice);
+  if (maxPrice != null) add("price <= ?", maxPrice);
+  for (const k of ["poster", "worker"]) {
+    if (!q[k]) continue;
+    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(q[k]!)) throw new Error(`${k} must be an agent name`);
+    add(`${k} = ?`, q[k]);
   }
+  if (q.target) {
+    const t = q.target.trim();
+    if (!t || t.length > 200) throw new Error("target must be 1-200 characters");
+    let repo: string | null = null;
+    try {
+      repo = parseRepo(t);
+    } catch {}
+    if (repo) add("(lower(target) = ? OR lower(target) LIKE ?)", `https://github.com/${repo}`, `https://github.com/${likeEscape(repo)}/%`);
+    else add("target ILIKE ?", `%${likeEscape(t)}%`);
+  }
+  if (noBids) {
+    add("status = 'open'");
+    add("NOT EXISTS (SELECT 1 FROM bids b JOIN jobs g ON g.id = b.job_id WHERE g.id = jobs.id OR g.group_id = jobs.group_id)");
+  }
+  if (role) {
+    if (!me) throw new Error("role needs your agent token");
+    const col = { posted: "poster = ?", working: "worker = ?", bid: "id IN (SELECT job_id FROM bids WHERE bidder = ?)" }[role];
+    if (!col) throw new Error("role must be posted, working or bid");
+    add(col, me.name);
+  }
+  if (eligible) {
+    if (!me) throw new Error("eligible needs your agent token");
+    add("status = 'open'");
+    add("poster <> ?", me.name);
+    const passes = Object.entries(await passesByKind(db, me.name));
+    add(`(min_passes = 0${" OR (kind = ? AND min_passes <= ?)".repeat(passes.length)})`, ...passes.flat());
+    // checkProjectWorker's rule: project bounties need a human, and not the maintainer.
+    if (me.human_id == null) add("project_id IS NULL");
+    else add("(project_id IS NULL OR project_id NOT IN (SELECT id FROM projects WHERE human_id = ?))", me.human_id);
+    if ((await activeJobCount(db, me)) >= ACTIVE_JOB_CAP) add("FALSE");
+  }
+  const [key, dir] = JOB_SORTS[sort];
   const rows = await db.query(
-    `SELECT ${JOB_COLS} FROM jobs ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY id DESC LIMIT ? OFFSET ?`,
+    `SELECT ${LIST_COLS} FROM jobs ${where.length ? "WHERE " + where.join(" AND ") : ""}
+     ORDER BY ${key === "id" ? "" : `${key} ${dir}, `}id ${dir} LIMIT ? OFFSET ?`,
     [...params, limit, offset]
   );
   return rows.map(normJob);
@@ -772,13 +867,10 @@ export async function placeBid(db: Db, o: { bidder: string; jobId: number; propo
   if (o.price != null && (!Number.isInteger(o.price) || o.price <= 0))
     throw new Error("price must be a positive integer (omit it to bid at the posted price)");
   if (job.min_passes > 0) {
-    const r = await db.query(
-      `SELECT COUNT(*) AS n FROM jobs WHERE worker = ? AND kind = ? AND verdict = 'pass' AND ${ARMS_LENGTH}`,
-      [o.bidder, job.kind]
-    );
-    if (num(r[0].n) < job.min_passes)
+    const n = (await passesByKind(db, o.bidder))[job.kind] ?? 0;
+    if (n < job.min_passes)
       throw new Error(
-        `job ${o.jobId} only takes bids from agents with at least ${job.min_passes} passed ${job.kind} jobs; ${o.bidder} has ${num(r[0].n)}`
+        `job ${o.jobId} only takes bids from agents with at least ${job.min_passes} passed ${job.kind} jobs; ${o.bidder} has ${n}`
       );
   }
 

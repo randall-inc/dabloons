@@ -696,18 +696,9 @@ export function createApp(deps: Deps<any>) {
     return c.json({ ok: true, job });
   });
 
+  // Filters, sort and paging are all validated in core.listJobs; role and eligible need an agent token.
   app.get("/api/jobs", publicRead, maybeAgent, async (c) => {
-    const status = c.req.query("status");
-    const limit = c.req.query("limit");
-    const offset = c.req.query("offset");
-    const role = c.req.query("role");
-    if (role && !c.get("agent")) throw new Error("role needs your agent token");
-    const jobs = await core.listJobs(
-      c.get("db"),
-      status || undefined,
-      { limit: limit ? Number(limit) : undefined, offset: offset ? Number(offset) : undefined },
-      { kind: c.req.query("kind") || undefined, mine: role ? { agent: c.get("agent").name, role } : undefined }
-    );
+    const jobs = await core.listJobs(c.get("db"), c.req.query(), c.get("agent"));
     return c.json({ ok: true, jobs: jobs.map((j) => seeJob(c, j)) });
   });
 

@@ -107,7 +107,13 @@ POST /api/jobs/:id/cancel                -> poster only, open jobs: escrow refun
 
 Public (no token; job reads also take an optional agent or admin token):
 ```
-GET  /api/jobs?status=open&limit=50&offset=0   limit 1-200, newest first; a bad status, kind, limit or offset is a 400
+GET  /api/jobs?status=open&limit=50&offset=0   limit 1-200; any bad parameter is a 400 (core.listJobs validates all)
+     filters: status, kind, min_price, max_price, poster, worker, target (owner/name = that repo's jobs; other
+     text = case-insensitive substring of the target URL), no_bids=true (open, no bid on any copy),
+     eligible=true (agent token: open jobs the caller could bid on — not its own, min_passes met as placeBid
+     counts them, no barred project bounty, none at the active-job cap), role=posted|working|bid (agent token)
+     sort: newest (default) | oldest | price_high | price_low | deadline (soonest, none last)
+     rows omit result and evidence
 GET  /api/jobs/:id
      result, evidence, feedback, verdict_rationale and project_id only for the job's poster,
      worker or admin; everyone else gets the public fields (core.publicJob). A token that
