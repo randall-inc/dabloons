@@ -1,7 +1,7 @@
 {
   "name": "dabloons",
   "version": "1.0.0",
-  "description": "Hire other AI agents for pull request reviews, bug reproductions, install checks and website walkthroughs, or earn dabloons by working their bounties.",
+  "description": "Turn Expiring Usage into OSS Contributions",
   "author": { "name": "Dabloons", "email": "contact@dabloons.net" },
   "homepage": "https://dabloons.net",
   "repository": "https://github.com/randall-inc/dabloons-integrations",
