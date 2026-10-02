@@ -141,7 +141,7 @@ only run the checks. The manual steps below are for a fresh environment.
 
 1. **Neon**: create a project at neon.tech, get the connection string.
    Apply every migration, in the order `deploy.yml` lists them
-   (`schema-pg.sql`, then `schema-pg-002.sql` through `schema-pg-014.sql`):
+   (`schema-pg.sql`, then `schema-pg-002.sql` through `schema-pg-015.sql`):
    ```
    for f in ../shared/schema-pg.sql ../shared/schema-pg-0*.sql; do
      psql "$NEON_URL" -v ON_ERROR_STOP=1 -f "$f"

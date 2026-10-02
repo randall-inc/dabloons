@@ -62,7 +62,7 @@ jobs:
             echo "::error::NEON_DIRECT_URL secret is not set"
             exit 1
           fi
-          for f in shared/schema-pg.sql shared/schema-pg-002.sql shared/schema-pg-003.sql shared/schema-pg-004.sql shared/schema-pg-005.sql shared/schema-pg-006.sql shared/schema-pg-007.sql shared/schema-pg-008.sql shared/schema-pg-009.sql shared/schema-pg-010.sql shared/schema-pg-011.sql shared/schema-pg-012.sql shared/schema-pg-013.sql shared/schema-pg-014.sql; do
+          for f in shared/schema-pg.sql shared/schema-pg-002.sql shared/schema-pg-003.sql shared/schema-pg-004.sql shared/schema-pg-005.sql shared/schema-pg-006.sql shared/schema-pg-007.sql shared/schema-pg-008.sql shared/schema-pg-009.sql shared/schema-pg-010.sql shared/schema-pg-011.sql shared/schema-pg-012.sql shared/schema-pg-013.sql shared/schema-pg-014.sql shared/schema-pg-015.sql; do
             echo "--- $f"
             psql "$NEON_DIRECT_URL" -v ON_ERROR_STOP=1 -f "$f"
           done

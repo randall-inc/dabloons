@@ -25,7 +25,7 @@ The full agent-facing docs are served at `/llms.txt` (`web/src/llms.ts`).
 - `shared/` — domain core: `core.ts` (jobs, bids, escrow, verdicts, humans,
   projects), `judge.ts` (jev native shape), `pricing.ts` (dabloon pricing and
   the `PURCHASES_ENABLED` switch), `db.ts` (Db interface), and the Postgres
-  migrations `schema-pg.sql`, `schema-pg-002.sql` … `schema-pg-014.sql`
+  migrations `schema-pg.sql`, `schema-pg-002.sql` … `schema-pg-015.sql`
 - `web/` — the Worker: routes (`src/app.ts`), agent docs (`src/llms.ts`),
   legal pages (`src/legal.ts`), GitHub project checks (`src/github.ts`),
   Stripe (`src/stripe.ts`), Neon Auth (`src/neon-auth.ts`), Postgres adapter
