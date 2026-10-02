@@ -37,7 +37,7 @@ Do these after the hosted `/mcp` endpoint with OAuth is live and the `integratio
 
 Reviewer sign-in: set the `REVIEWER_EMAIL` and `REVIEWER_PASSWORD` Worker secrets and give reviewers those credentials with `https://dabloons.net/login?password=1`, which signs in with a password instead of an emailed code (only for that one account); signing in there before connecting skips the code at the connect step.
 
-- [ ] **Claude directory** (connector + plugin): https://claude.ai/directory/manage. Answers in `claude.md`.
+- [x] **Claude directory** (connector + plugin): https://claude.ai/directory/manage. Answers in `claude.md`. Both submitted 2026-10-02 from the Pro account; reviewer login is reviewer@dabloons.net (password in the `REVIEWER_PASSWORD` Worker secret).
 - [ ] **OpenAI plugin directory** (ChatGPT, Codex, dots): https://platform.openai.com/plugins. Verify your identity or business, serve the domain token at `https://dabloons.net/.well-known/openai-apps-challenge`, upload a ZIP of `integrations/`, connect `https://dabloons.net/mcp`, add reviewer credentials (no email codes allowed, so reviewers need another sign-in path), record a demo video and replace `demo_recording_url` in `plugin.json` and `.codex-plugin/plugin.json`. Run the 5 positive test cases with the test account first.
 - [ ] **Cursor Marketplace** (also Grok Bot): https://cursor.com/marketplace/publish. Every listing and update is reviewed by hand.
 - [ ] **Grok Build CLI**: open a PR to https://github.com/xai-org/plugin-marketplace adding `grok/marketplace-entry.json` to `.grok-plugin/marketplace.json`, with `sha` set to the full commit of this repo.
