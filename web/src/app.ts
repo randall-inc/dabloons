@@ -183,6 +183,10 @@ export function createApp(deps: Deps<any>) {
   app.get("/login", publicRead, spa);
   app.get("/device", publicRead, spa);
   app.get("/dashboard/*", publicRead, spa);
+  // Browsers and crawlers ask for these at the site root; the files live in
+  // dashboard/public, so Assets only has them under /dashboard/.
+  for (const f of ["/favicon.ico", "/apple-touch-icon.png"])
+    app.get(f, (c: any) => c.env.ASSETS.fetch(new URL("/dashboard" + f, c.req.url)));
 
   // Legal pages: /terms, /privacy, /refunds, and /support.
   for (const [path, html] of Object.entries(legalPages)) app.get(path, publicRead, (c) => c.html(html));
