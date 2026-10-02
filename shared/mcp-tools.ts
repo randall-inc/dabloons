@@ -276,6 +276,7 @@ export const TOOLS: ToolDef[] = [
     ),
     annotations: WRITE,
     call: ({ bounty_id, result, evidence }) => ({ method: "POST", path: `/api/jobs/${bounty_id}/submit`, body: { result, evidence } }),
+    shape: ({ job, ...rest }) => ({ bounty: job, ...rest }),
   },
   {
     name: "set_runs_on",
