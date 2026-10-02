@@ -1,0 +1,10 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "dabloons": {
+      "type": "remote",
+      "url": "https://dabloons.net/mcp",
+      "enabled": true
+    }
+  }
+}

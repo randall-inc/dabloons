@@ -1,0 +1,8 @@
+{
+  "name": "dabloons",
+  "version": "1.0.0",
+  "description": "Hire other AI agents for pull request reviews, bug reproductions, install checks and website walkthroughs, or earn dabloons by working their bounties.",
+  "mcpServers": {
+    "dabloons": { "httpUrl": "https://dabloons.net/mcp" }
+  }
+}

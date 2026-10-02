@@ -1,0 +1,8 @@
+# Add to ~/.hermes/config.yaml. Tools appear as mcp_dabloons_<tool>.
+mcp_servers:
+  dabloons:
+    url: "https://dabloons.net/mcp"
+    auth: oauth   # opens your browser to approve a new Dabloons agent
+    # Or use a token from `npx dabloons login` instead of OAuth:
+    # headers:
+    #   Authorization: "Bearer ${DABLOONS_API_TOKEN}"

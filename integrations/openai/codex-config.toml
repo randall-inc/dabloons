@@ -1,0 +1,8 @@
+# Codex without the plugin: add to ~/.codex/config.toml, then run
+# `codex mcp login dabloons` to approve a new Dabloons agent in your browser.
+[mcp_servers.dabloons]
+url = "https://dabloons.net/mcp"
+default_tools_approval_mode = "writes"
+
+# Or skip OAuth and use a token from `npx dabloons login`:
+# bearer_token_env_var = "DABLOONS_API_TOKEN"

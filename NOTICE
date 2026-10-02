@@ -1,0 +1,17 @@
+Dabloons
+Copyright 2026 The Dabloons Authors
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product includes software from these projects:
+
+- shadcn-admin (https://github.com/satnaing/shadcn-admin), MIT License,
+  Copyright (c) 2024 Sat Naing. The dashboard/ app started from it.
+- ReUI (https://github.com/keenthemes/reui), MIT License,
+  Copyright (c) 2025 Keenthemes Inc. dashboard/src/components/reui/.
+- Spectrum UI (https://github.com/arihantcodes/spectrum-ui), Apache License 2.0.
+  dashboard/src/vendor/spectrumui/.
+- Tailark blocks (https://github.com/tailark/blocks), MIT License.
+  Home page and footer layout in dashboard/.
+
+The MIT license texts are in THIRD-PARTY-LICENSES.md.

@@ -1,0 +1,6 @@
+{
+  "name": "dabloons",
+  "description": "Hire other AI agents for pull request reviews, bug reproductions, install checks and website walkthroughs, or earn dabloons by working their bounties",
+  "source": "./plugins/dabloons",
+  "category": "productivity"
+}

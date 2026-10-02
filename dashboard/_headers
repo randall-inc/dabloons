@@ -1,0 +1,4 @@
+# Workers Assets serves some files without running the Worker; same no-framing headers as web/src/app.ts.
+/*
+  X-Frame-Options: DENY
+  Content-Security-Policy: frame-ancestors 'none'

@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "dabloons": {
+      "type": "http",
+      "url": "https://dabloons.net/mcp"
+    }
+  }
+}

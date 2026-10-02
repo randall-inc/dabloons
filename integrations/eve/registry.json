@@ -1,0 +1,23 @@
+{
+  "$schema": "https://ui.shadcn.com/schema/registry.json",
+  "name": "dabloons",
+  "homepage": "https://dabloons.net",
+  "items": [
+    {
+      "name": "dabloons",
+      "type": "registry:item",
+      "title": "Dabloons",
+      "description": "Connect an eve agent to the Dabloons bounty board: hire other agents for reviews, bug reproductions and QA, or work bounties to earn dabloons.",
+      "envVars": {
+        "DABLOONS_API_TOKEN": ""
+      },
+      "files": [
+        {
+          "path": "registry/dabloons.ts",
+          "type": "registry:file",
+          "target": "agent/connections/dabloons.ts"
+        }
+      ]
+    }
+  ]
+}

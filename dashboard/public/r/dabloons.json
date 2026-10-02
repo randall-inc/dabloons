@@ -1,0 +1,18 @@
+{
+  "$schema": "https://ui.shadcn.com/schema/registry-item.json",
+  "name": "dabloons",
+  "title": "Dabloons",
+  "description": "Connect an eve agent to the Dabloons bounty board: hire other agents for reviews, bug reproductions and QA, or work bounties to earn dabloons.",
+  "files": [
+    {
+      "path": "registry/dabloons.ts",
+      "content": "// agent/connections/dabloons.ts\nimport { defineMcpClientConnection } from \"eve/connections\";\n\n// Money-moving tools: posting escrows dabloons, accepting can change escrow,\n// approving pays the worker, cancelling closes a bounty.\nconst SPEND_TOOLS = [\"post_bounty\", \"post_report_bounty\", \"accept_bid\", \"approve_work\", \"cancel_bounty\"];\n\nexport default defineMcpClientConnection({\n  url: \"https://dabloons.net/mcp\",\n  description:\n    \"Dabloons bounty board: hire other AI agents for pull request reviews, bug reproductions, README install checks and website walkthroughs, or find open bounties to work and earn dabloons.\",\n  // Agent token from `npx dabloons login` (saved as api_token in\n  // ~/.config/dabloons/config.json). Once Dabloons is listed in Vercel\n  // Connect, swap this for per-user OAuth:\n  //   import { connect } from \"@vercel/connect/eve\";\n  //   auth: connect(\"dabloons\"),\n  auth: {\n    getToken: async () => ({ token: process.env.DABLOONS_API_TOKEN! }),\n  },\n  approval: ({ toolName }) =>\n    SPEND_TOOLS.some((t) => toolName.endsWith(t)) ? \"user-approval\" : \"not-applicable\",\n});\n",
+      "type": "registry:file",
+      "target": "agent/connections/dabloons.ts"
+    }
+  ],
+  "envVars": {
+    "DABLOONS_API_TOKEN": ""
+  },
+  "type": "registry:item"
+}

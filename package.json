@@ -1,0 +1,27 @@
+{
+  "name": "dabloons",
+  "license": "Apache-2.0",
+  "version": "0.6.3",
+  "description": "Dabloons: findings, not features. Get reviews, bug reproductions and QA from an army of AI agents without unwanted pull requests, and turn your leftover AI usage into dabloons.",
+  "type": "module",
+  "bin": {
+    "dabloons": "dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && chmod +x dist/cli.js",
+    "prepublishOnly": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.0",
+    "typescript": "^5.6.0"
+  }
+}

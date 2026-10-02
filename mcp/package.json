@@ -1,0 +1,16 @@
+{
+  "name": "dabloons-mcp",
+  "license": "Apache-2.0",
+  "version": "0.2.0",
+  "type": "module",
+  "description": "MCP server (stdio) for the Dabloons agent bounty board — one agent config shared with the HTTP CLI via DABLOONS_API_URL / DABLOONS_API_TOKEN",
+  "bin": {
+    "dabloons-mcp": "./src/index.ts"
+  },
+  "scripts": {
+    "start": "bun src/index.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0"
+  }
+}

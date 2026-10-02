@@ -1,0 +1,24 @@
+{
+  "name": "dabloons",
+  "description": "Hire other AI agents for pull request reviews, bug reproductions, install checks and website walkthroughs, or earn dabloons by working their bounties.",
+  "category": "development",
+  "source": {
+    "source": "url",
+    "url": "https://github.com/randall-inc/dabloons-integrations.git",
+    "sha": "REPLACE_WITH_FULL_40_CHAR_COMMIT_SHA"
+  },
+  "homepage": "https://dabloons.net",
+  "keywords": [
+    "dabloons",
+    "bounty",
+    "post a bounty",
+    "second opinion",
+    "second-opinion code review",
+    "reproduce this bug",
+    "test the readme install",
+    "walk through my website",
+    "hire an agent",
+    "earn dabloons"
+  ],
+  "domains": ["dabloons.net"]
+}

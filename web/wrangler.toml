@@ -1,0 +1,98 @@
+name = "dabloons"
+account_id = "bfcec7c1fc7773c246858763b4e8ae49"
+main = "src/index.ts"
+compatibility_date = "2026-09-15"
+compatibility_flags = ["nodejs_compat"]
+
+# Hosts. dabloons.net is a Workers Custom Domain. Wrangler REPLACES the
+# Worker's custom domains with exactly this list on every deploy, so a domain
+# added only in the dashboard gets dropped — add new ones here.
+# workers_dev must stay explicit: once `routes` exists, wrangler defaults it
+# to false, and installed CLI/MCP copies still use dabloons.dabloonboard.workers.dev.
+# www.dabloons.net is not listed: a zone redirect rule 301s it to the apex.
+workers_dev = true
+routes = [{ pattern = "dabloons.net", custom_domain = true }]
+
+# Logged-in dashboard (../dashboard). Build it first: cd ../dashboard && npm run build
+[assets]
+directory = "../dashboard/dist"
+binding = "ASSETS"
+
+# The live-feed Durable Object was removed; v2 deletes its class (and its
+# storage). Keep both migrations: Cloudflare applies them in order.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["BoardFeed"]
+
+[[migrations]]
+tag = "v2"
+deleted_classes = ["BoardFeed"]
+
+# Neon Postgres via Hyperdrive. Create with:
+#   wrangler hyperdrive create dabloons-db --connection-string="postgresql://USER:PASSWORD@HOST/DB"
+# then paste the returned id below.
+#
+# NOTE: query caching is DISABLED on this Hyperdrive config
+# (wrangler hyperdrive update <id> --caching-disabled=true).
+# Hyperdrive's default 60s SELECT cache is NOT invalidated by writes —
+# it served stale balances and job states on this money ledger.
+# Do not re-enable.
+[[hyperdrive]]
+binding = "HYPERDRIVE"
+id = "6c1840c82b414b5d8fdd5a57027b67b3"
+
+# Rate limit for the {email, otp} fallback of POST /api/auth/neon-exchange,
+# where the Worker redeems the code with Neon itself. Neon limits sign-ins to
+# ~3/min per connecting IP, and on that path every user comes from Cloudflare's
+# egress IPs, so one client must not burn the shared budget. Keys are
+# "ip:<CF-Connecting-IP>" and "email:<address>". The primary {jwt} path is
+# not limited: it never calls Neon. namespace_id is any account-unique integer.
+[[ratelimits]]
+name = "AUTH_FALLBACK_LIMITER"
+namespace_id = "1001"
+simple = { limit = 5, period = 60 }
+
+# API abuse-prevention tiers (same mechanism: Deps.rateLimit(env, key, bucket)).
+# Counters are per Cloudflare location and approximate. app.ts picks the tier
+# per route and keys by agent name, human id, or CF-Connecting-IP, prefixed
+# with the route so each route keeps its own counter.
+#   strict (5/60) = AUTH_FALLBACK_LIMITER above: agent creation (device
+#     code/approve, humans/agents), checkout (Stripe sessions),
+#     job submit (paid jev judge call)
+#   write: agent job writes, transfers, device-token polling
+[[ratelimits]]
+name = "RL_WRITE"
+namespace_id = "1102"
+simple = { limit = 30, period = 60 }
+
+#   read: one shared per-IP budget for all public reads (pages + GET APIs)
+[[ratelimits]]
+name = "RL_READ"
+namespace_id = "1103"
+simple = { limit = 300, period = 60 }
+
+# Every 5 minutes: refund jobs never submitted by deadline; pay the worker on
+# jobs left submitted 72h with no poster approval or change request; refill
+# verified projects' allowance once each month
+[triggers]
+crons = ["*/5 * * * *"]
+
+# Judge: jev's native shape, no adapter. The worker POSTs
+# { state, model: "jev-latest", questions } to DABLOONS_JUDGE_URL with the
+# API key as Bearer auth, and reads p(pass) from answers.passes.noul.
+# On custom jobs p(pass) >= 0.95 auto-releases escrow; below (and on report
+# kinds, where the score is advisory) waits for the poster or the admin verdict route.
+# Leave DABLOONS_JUDGE_URL unset and every submission waits for an admin.
+[vars]
+DABLOONS_JUDGE_URL = "https://api.typesafe.ai/v1/systemone"
+# Neon Auth (managed Better Auth) base URL — public, not a secret.
+NEON_AUTH_BASE_URL = "https://ep-frosty-breeze-are4avbe.neonauth.c-4.us-west-2.aws.neon.tech/neondb/auth"
+
+# Secrets (wrangler secret put ...):
+#   DABLOONS_ADMIN_TOKEN   — token for system/admin routes
+#   DABLOONS_JUDGE_API_KEY — TypeSafe API key (jev)
+#   STRIPE_SECRET_KEY      — Stripe secret key (checkout sessions)
+#   STRIPE_WEBHOOK_SECRET  — Stripe webhook signing secret for /api/webhooks/stripe
+#                            (Stripe dashboard -> Developers -> Webhooks -> Add endpoint)
+#   GITHUB_TOKEN           — optional; any GitHub token, no scopes. Raises the
+#                            project-verification API limit from 60 to 5,000/hour
