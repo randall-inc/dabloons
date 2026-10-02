@@ -66,7 +66,7 @@ Reviewer sign-in: set the `REVIEWER_EMAIL` and `REVIEWER_PASSWORD` Worker secret
 - [x] ToolSDK registry: https://github.com/toolsdk-ai/toolsdk-mcp-registry/pull/606
 - [x] llms.txt Hub: https://github.com/thedaviddias/llms-txt-hub/pull/1798
 - [x] skills.sh: no form; listing follows `npx skills add randall-inc/dabloons-integrations` installs (line added to the integrations README).
-- [ ] Glama: already listed from the MCP Registry but "Unhealthy" until claimed (needs a Glama login) and given the reviewer test login. Then open the punkpeye/awesome-remote-mcp-servers PR (requires the Glama badge and starring the repo).
+- [x] Glama: claimed 2026-10-02 (ownership via `/.well-known/glama.json`), healthy with OAuth test profile (`glama-health` agent), coin thumbnail, publisher profile set. Then https://github.com/punkpeye/awesome-remote-mcp-servers/pull/1015 (repo starred by talonwr, as their rules require).
 - [ ] AlternativeTo: needs a login.
-- [ ] AI Indigo: needs an account (optional).
+- [ ] AI Indigo: needs an account (optional; their form is disabled until signed in).
 - Skipped for now: Product Hunt (needs a planned launch), badge-for-backlink launch sites, paid fast-tracks (mcp.so $39, mcpservers.org $39, MCP Market $29), ClawHub (needs MIT-0 skills).
