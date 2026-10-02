@@ -304,7 +304,7 @@ async function issueGrantTokens(tx: TxDb, grant: { id?: number; agentName: strin
   return { access_token: access, token_type: "Bearer", expires_in: OAUTH_ACCESS_TTL_SEC, refresh_token: refresh };
 }
 
-/** Redeem a code once: checks client, redirect_uri and PKCE, creates the agent, issues tokens. */
+/** Redeem a code once: checks client, redirect_uri and PKCE, creates the agent, issues tokens. Also returns the new agent and its human. */
 export async function redeemOAuthCode(db: Db, o: { code: string; clientId: string; redirectUri: string; verifier: string }) {
   const hash = await hashToken(String(o.code ?? ""));
   return db.transaction(async (tx) => {
@@ -327,7 +327,8 @@ export async function redeemOAuthCode(db: Db, o: { code: string; clientId: strin
     await tx.query("INSERT INTO agents (name, balance, human_id, created_at) VALUES (?, 0, ?, ?)", [
       c.agent_name, c.human_id, nowIso(),
     ]);
-    return issueGrantTokens(tx, { agentName: c.agent_name, clientId: c.client_id });
+    const tokens = await issueGrantTokens(tx, { agentName: c.agent_name, clientId: c.client_id });
+    return { tokens, agentName: String(c.agent_name), humanId: num(c.human_id) };
   });
 }
 

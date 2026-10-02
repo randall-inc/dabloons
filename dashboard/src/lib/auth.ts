@@ -17,13 +17,19 @@ const FALLBACK_KEY = 'dabloons_neon_fallback'
 export const RESENT_MESSAGE =
   "This browser blocks Neon's sign-in cookie, so we emailed you a new code. Enter that one."
 
-let baseUrl: Promise<string> | undefined
-function authBaseUrl() {
-  baseUrl ??= api<{ neon_auth_base_url: string | null }>('/auth/config').then((r) => {
-    if (!r.neon_auth_base_url) throw new Error('Sign-in is not configured')
-    return r.neon_auth_base_url
-  })
-  return baseUrl
+type AuthConfig = { neon_auth_base_url: string | null; reviewer_email?: string | null }
+let config: Promise<AuthConfig> | undefined
+const authConfig = () => (config ??= api<AuthConfig>('/auth/config'))
+
+async function authBaseUrl() {
+  const r = await authConfig()
+  if (!r.neon_auth_base_url) throw new Error('Sign-in is not configured')
+  return r.neon_auth_base_url
+}
+
+/** The app-directory reviewer's email (signs in with a password), or null. */
+export async function reviewerEmail() {
+  return (await authConfig()).reviewer_email ?? null
 }
 
 async function neon(path: string, body?: unknown) {

@@ -137,6 +137,30 @@ export function createApp(deps: Deps<any>) {
     return c.get("admin") || (me && (me === job.poster || me === job.worker)) ? job : core.publicJob(job);
   };
 
+  // The app-directory reviewer account: its email, lowercased, only when both
+  // REVIEWER_EMAIL and REVIEWER_PASSWORD are set (otherwise the feature is off).
+  const reviewerEmail = (env: any): string | null =>
+    (env?.REVIEWER_PASSWORD && (env?.REVIEWER_EMAIL as string | undefined)?.trim().toLowerCase()) || null;
+
+  // Reviewer-only: a new agent on the reviewer's account gets up to 50
+  // dabloons from their main balance (same ledger move as the dashboard's
+  // Transfer), so a reviewer can post a bounty with no setup. Returns the
+  // amount moved. Never fails the agent creation it follows.
+  const fundReviewerAgent = async (env: any, db: Db, humanId: number, agentName: string) => {
+    const want = reviewerEmail(env);
+    if (!want) return 0;
+    try {
+      const human = await core.getHuman(db, humanId);
+      const amount = Math.min(50, human.balance);
+      if (String(human.email).toLowerCase() !== want || amount <= 0) return 0;
+      await core.transferForHuman(db, { humanId, toAgent: agentName, amount });
+      return amount;
+    } catch (e) {
+      console.error("reviewer agent funding failed", e);
+      return 0;
+    }
+  };
+
   const needHuman = async (c: any, next: any) => {
     const token = bearer(c);
     if (!token) return c.json({ ok: false, error: "missing bearer token" }, 401);
@@ -256,6 +280,7 @@ export function createApp(deps: Deps<any>) {
       String(user_code ?? ""),
       typeof name === "string" ? name : undefined
     );
+    agent.balance += await fundReviewerAgent(c.env, c.get("db"), c.get("human").id, agent.name);
     return c.json({ ok: true, agent });
   });
 
@@ -335,7 +360,7 @@ export function createApp(deps: Deps<any>) {
   // neon-exchange, with the stable identity "reviewer:<email>" standing in
   // for a Neon user id.
   app.post("/api/auth/reviewer", async (c) => {
-    const wantEmail = (c.env?.REVIEWER_EMAIL as string | undefined)?.trim().toLowerCase();
+    const wantEmail = reviewerEmail(c.env);
     const wantPassword = c.env?.REVIEWER_PASSWORD as string | undefined;
     if (!wantEmail || !wantPassword) return c.json({ ok: false, error: "not found" }, 404);
     const ip = c.req.header("cf-connecting-ip") || "unknown";
@@ -356,9 +381,14 @@ export function createApp(deps: Deps<any>) {
     return signIn(c, { id: "reviewer:" + wantEmail, email: wantEmail }, referral_code);
   });
 
-  // Public Neon Auth base URL for the dashboard's sign-in page.
+  // Public Neon Auth base URL for the dashboard's sign-in page, plus the
+  // reviewer email (when that sign-in is on) so the page asks it for a password.
   app.get("/api/auth/config", (c) =>
-    c.json({ ok: true, neon_auth_base_url: (c.env?.NEON_AUTH_BASE_URL as string) || null })
+    c.json({
+      ok: true,
+      neon_auth_base_url: (c.env?.NEON_AUTH_BASE_URL as string) || null,
+      reviewer_email: reviewerEmail(c.env),
+    })
   );
 
   app.get("/api/humans/me", needHuman, async (c) => {
@@ -389,6 +419,7 @@ export function createApp(deps: Deps<any>) {
   app.post("/api/humans/agents", needHuman, limit("strict", "human-agents", byHuman), async (c) => {
     const { name } = await c.req.json().catch(() => ({} as any));
     const a = await core.provisionAgentForHuman(c.get("db"), c.get("human").id, String(name ?? ""));
+    a.balance += await fundReviewerAgent(c.env, c.get("db"), c.get("human").id, a.name);
     return c.json({
       ok: true,
       agent: { name: a.name, balance: a.balance, human_id: a.human_id },
@@ -831,12 +862,14 @@ export function createApp(deps: Deps<any>) {
       let tokens;
       if (p.grant_type === "authorization_code") {
         if (!p.code || !p.code_verifier) return err("invalid_request", "code and code_verifier are required");
-        tokens = await core.redeemOAuthCode(db, {
+        const r = await core.redeemOAuthCode(db, {
           code: p.code,
           clientId: p.client_id,
           redirectUri: p.redirect_uri,
           verifier: p.code_verifier,
         });
+        await fundReviewerAgent(c.env, db, r.humanId, r.agentName);
+        tokens = r.tokens;
       } else if (p.grant_type === "refresh_token") {
         if (!p.refresh_token) return err("invalid_request", "refresh_token is required");
         tokens = await core.refreshOAuthGrant(db, { refreshToken: p.refresh_token, clientId: p.client_id });

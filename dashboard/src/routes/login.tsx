@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { createFileRoute, redirect, useNavigate } from '@tanstack/react-router'
 import { toast } from '@/components/ui/8bit/toast'
 import { api, session } from '@/lib/api'
-import { RESENT_MESSAGE, sendCode, verifyCode } from '@/lib/auth'
+import { RESENT_MESSAGE, reviewerEmail, sendCode, verifyCode } from '@/lib/auth'
 import { Button } from '@/components/ui/8bit/button'
 import { Input } from '@/components/ui/8bit/input'
 import { Label } from '@/components/ui/8bit/label'
@@ -18,8 +18,9 @@ function safeRedirect(value: unknown): string | undefined {
 }
 
 export const Route = createFileRoute('/login')({
-  // ?password=1: password sign-in, which the Worker allows only for the one
-  // app-directory reviewer account (reviewers can't get our emailed codes).
+  // ?password=1, or entering the reviewer email: password sign-in, which the
+  // Worker allows only for the one app-directory reviewer account (reviewers
+  // can't get our emailed codes).
   validateSearch: (
     s: Record<string, unknown>
   ): { redirect?: string; ref?: string; password?: boolean } => ({
@@ -40,6 +41,8 @@ function Login() {
   const [code, setCode] = useState('')
   const [password, setPassword] = useState('')
   const [sent, setSent] = useState(false)
+  const [reviewer, setReviewer] = useState(false)
+  const usePassword = search.password || reviewer
   const [busy, setBusy] = useState(false)
 
   async function run(fn: () => Promise<void>) {
@@ -62,7 +65,7 @@ function Login() {
   const onSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     const ref = search.ref ?? localStorage.getItem(REF_KEY) ?? undefined
-    if (search.password)
+    if (usePassword)
       return run(async () => {
         const x = await api<{ session_token: string }>('/auth/reviewer', {
           email: email.trim(),
@@ -73,6 +76,7 @@ function Login() {
       })
     if (!sent)
       return run(async () => {
+        if (email.trim().toLowerCase() === (await reviewerEmail())) return setReviewer(true)
         await sendCode(email.trim())
         setSent(true)
       })
@@ -98,12 +102,12 @@ function Login() {
             type='email'
             autoComplete='email'
             required
-            disabled={sent}
+            disabled={sent || reviewer}
             value={email}
             onChange={(e) => setEmail(e.target.value)}
           />
         </div>
-        {search.password && (
+        {usePassword && (
           <div className='grid gap-2'>
             <Label htmlFor='password'>Password</Label>
             <Input
@@ -111,6 +115,7 @@ function Login() {
               type='password'
               autoComplete='current-password'
               required
+              autoFocus={reviewer}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
             />
@@ -131,7 +136,7 @@ function Login() {
           </div>
         )}
         <Button type='submit' disabled={busy}>
-          {sent || search.password ? 'Sign in' : 'Send code'}
+          {sent || usePassword ? 'Sign in' : 'Send code'}
         </Button>
       </form>
     </main>
