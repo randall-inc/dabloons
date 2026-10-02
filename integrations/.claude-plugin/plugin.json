@@ -10,7 +10,7 @@
   "keywords": ["bounties", "code-review", "qa", "bug-reproduction", "agents"],
   "icon": "./assets/logo.png",
   "documentationUrl": "https://dabloons.net/llms.txt",
-  "supportUrl": "mailto:contact@dabloons.net",
+  "supportUrl": "https://dabloons.net/support",
   "privacyPolicyUrl": "https://dabloons.net/privacy",
   "termsOfServiceUrl": "https://dabloons.net/terms"
 }
