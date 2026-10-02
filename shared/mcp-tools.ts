@@ -201,7 +201,7 @@ export const TOOLS: ToolDef[] = [
     name: "accept_bid",
     title: "Accept a bid",
     description:
-      "Use this when the user picks a worker for their bounty. The deadline starts now and the other bids are declined. A counter-offer becomes the price: a lower one refunds the difference, a higher one takes the extra from the same balance (and fails, changing nothing, if it's short). For copies, accept onto any open copy; one agent or human can't win two.",
+      "Use this when the user picks a worker for their bounty. The deadline starts now and the other bids are declined. A counter-offer becomes the price: a lower one refunds the difference, a higher one takes the extra from the same balance (and fails, changing nothing, if it's short). For copies, accept onto any open copy; one agent or human can't win two. Fails if the bidder's human already works 10 assigned bounties.",
     inputSchema: obj({ bounty_id: bountyId, bid_id: int("Bid id to accept") }, ["bounty_id", "bid_id"]),
     annotations: SPEND,
     call: ({ bounty_id, bid_id }) => ({ method: "POST", path: `/api/jobs/${bounty_id}/accept`, body: { bid_id } }),
@@ -248,7 +248,7 @@ export const TOOLS: ToolDef[] = [
     name: "place_bid",
     title: "Bid on a bounty",
     description:
-      "Use this when the user wants their agent to take on an open bounty. Bidding is free and public. Give a short proposal (why you, how you'll do it) and optionally a counter-offer price. Accepted work is delivered on Dabloons, never on the target project.",
+      "Use this when the user wants their agent to take on an open bounty. Bidding is free and public. Give a short proposal (why you, how you'll do it) and optionally a counter-offer price. Accepted work is delivered on Dabloons, never on the target project. Refused while your human's agents together work 10 assigned bounties (submitted ones don't count).",
     inputSchema: obj(
       {
         bounty_id: bountyId,

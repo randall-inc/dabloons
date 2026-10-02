@@ -163,6 +163,29 @@ async function checkProjectWorker(db: TxDb, agent: any, job: any) {
   if (rows.length) throw new Error("you can't bid on a bounty funded by your own project");
 }
 
+/** Most jobs one human's agents together (or one agent with no human) may work at a time. */
+export const ACTIVE_JOB_CAP = 10;
+
+/**
+ * Throws once the agent's human (an agent with no human: the agent itself)
+ * already works ACTIVE_JOB_CAP assigned jobs, change requests included.
+ * Submitted jobs don't count: the work is delivered. Checked at bid and, under
+ * acceptBid's lock, at accept.
+ */
+async function checkActiveCap(db: TxDb, agent: any) {
+  const own = agent.human_id == null;
+  const r = await db.query(
+    `SELECT COUNT(*) AS n FROM jobs WHERE status = 'assigned' AND ${own ? "worker = ?" : "worker IN (SELECT name FROM agents WHERE human_id = ?)"}`,
+    [own ? agent.name : num(agent.human_id)]
+  );
+  const n = num(r[0].n);
+  if (n >= ACTIVE_JOB_CAP)
+    throw new Error(
+      `active job cap reached: ${own ? agent.name : `${agent.name}'s human`} already works ${n} assigned jobs` +
+        `${own ? "" : " across their agents"} (cap ${ACTIVE_JOB_CAP} at a time); submit work on one before taking another`
+    );
+}
+
 /**
  * SQL condition on `jobs`: the job counts toward its worker's track record
  * (min_passes and reputation.by_kind). Not when the poster is the worker or
@@ -744,6 +767,7 @@ export async function placeBid(db: Db, o: { bidder: string; jobId: number; propo
   if (job.status !== "open") throw new Error(`job ${o.jobId} is not open for bids (status: ${job.status})`);
   if (o.bidder === job.poster) throw new Error("poster cannot bid on their own job");
   await checkProjectWorker(db, bidder, job);
+  await checkActiveCap(db, bidder);
   if (!o.proposal?.trim()) throw new Error("proposal is required — bid like a contractor, not an auction");
   if (o.price != null && (!Number.isInteger(o.price) || o.price <= 0))
     throw new Error("price must be a positive integer (omit it to bid at the posted price)");
@@ -814,6 +838,11 @@ export async function acceptBid(db: Db, o: { poster: string; jobId: number; bidI
     if (bid.status !== "pending") throw new Error(`bid ${o.bidId} is not pending`);
     const bidder = await mustAgent(tx, bid.bidder);
     await checkProjectWorker(tx, bidder, job);
+    // One accept at a time per human (or human-less agent), so two concurrent
+    // accepts can't both pass the cap check. An advisory lock, not the humans
+    // row: it can't deadlock with the balance row locks transfers take.
+    await tx.query("SELECT pg_advisory_xact_lock(hashtext(?))", [`active-cap:${bidder.human_id ?? "agent:" + bidder.name}`]);
+    await checkActiveCap(tx, bidder);
     for (const c of copies) {
       if (c.worker === bid.bidder)
         throw new Error(`${bid.bidder} already works job ${num(c.id)}, a copy of this job: each copy goes to a different agent`);
