@@ -354,6 +354,15 @@ export async function getBalance(db: TxDb, name: string) {
   return normAgent(await mustAgent(db, name));
 }
 
+/** Dabloons this agent's balance has locked in escrow on its open, assigned and submitted jobs (project-funded jobs excluded). */
+export async function getEscrowed(db: TxDb, name: string): Promise<number> {
+  const rows = await db.query(
+    "SELECT COALESCE(SUM(escrow), 0) AS n FROM jobs WHERE poster = ? AND project_id IS NULL AND status IN ('open', 'assigned', 'submitted')",
+    [name]
+  );
+  return num(rows[0].n);
+}
+
 export async function listAgents(db: TxDb) {
   const rows = await db.query("SELECT name, balance, runs_on, created_at FROM agents ORDER BY name");
   return rows.map(normAgent);
@@ -425,6 +434,14 @@ type Template = {
 
 const NO_CHANGES = "This is a report: do not open pull requests, push code, or comment on the project.";
 const bare = (url: string) => url.replace(/^https?:\/\//, "");
+/** s cut to about n characters at a word boundary, with an ellipsis when cut. */
+function clip(s: string, n: number): string {
+  if (s.length <= n) return s;
+  const head = s.slice(0, n);
+  const space = head.search(/\s\S*$/);
+  const words = /\s/.test(s[n]) || space <= 0 ? head : head.slice(0, space);
+  return words.replace(/[\s,.;:!?-]+$/, "") + "…";
+}
 
 export const JOB_KINDS: Record<string, Template> = {
   bug_repro: {
@@ -468,7 +485,7 @@ export const JOB_KINDS: Record<string, Template> = {
     evidence:
       "the steps you took in order, every URL you visited, and what you saw at each step (exact error messages and copied text)",
     text: (t, goal) => ({
-      title: `Walk through ${new URL(t).hostname}: ${goal.slice(0, 80)}`,
+      title: `Walk through ${new URL(t).hostname}: ${clip(goal, 80)}`,
       requirements: `Visit ${t} as a brand-new user and try to: ${goal}. Report where you got stuck, confused or hit errors — or confirm you reached the goal. Do not enter real payment details or anyone's personal data.`,
       quality:
         "The result says whether the goal was reached and, if not, exactly where it failed. Every claim is backed by the evidence (steps and URLs). Nothing is made up.",
@@ -543,6 +560,10 @@ function privateHost(host: string): boolean {
  * identical jobs sharing a group_id, each with its own full-price escrow, for
  * independent workers: all copies or nothing. minPasses (default 0) refuses
  * bids from agents with fewer passed jobs of this kind. Returns the first copy.
+ * idempotencyKey (optional, scoped to the poster): a repeat with the same key
+ * returns the job first posted with it, copies included, and escrows nothing.
+ * Race-safe: the key is unique per poster, so a concurrent repeat fails its
+ * own transaction (escrow debit rolled back) and then finds the original.
  */
 export async function postJob(
   db: Db,
@@ -560,9 +581,20 @@ export async function postJob(
     copies?: number;
     minPasses?: number;
     project?: string;
+    idempotencyKey?: string;
   }
 ) {
   const poster = await mustAgent(db, o.poster);
+  const key = o.idempotencyKey;
+  if (key != null && (typeof key !== "string" || !key.trim() || key.length > 200))
+    throw new Error("idempotency key must be text of 1 to 200 characters");
+  const original = async () => {
+    if (key == null) return null;
+    const rows = await db.query("SELECT id FROM jobs WHERE poster = ? AND idempotency_key = ?", [o.poster, key]);
+    return rows.length ? getJob(db, num(rows[0].id)) : null;
+  };
+  const prev = await original();
+  if (prev) return prev;
   const kind = o.kind ?? "custom";
   let target: string | null = null;
   if (kind === "custom") {
@@ -636,14 +668,19 @@ export async function postJob(
       const share = Math.min(purchased, o.price);
       purchased -= share;
       const rows = await tx.query(
-        `INSERT INTO jobs (poster, kind, target, title, requirements, price, timeframe_hours, quality, status, escrow, escrow_purchased, min_passes, group_id, project_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?) RETURNING id`,
-        [o.poster, kind, target, o.title!.trim(), o.requirements!.trim(), o.price, hours, o.quality!.trim(), o.price, share, minPasses, ids[0] ?? null, project ? num(project.id) : null, nowIso()]
+        `INSERT INTO jobs (poster, kind, target, title, requirements, price, timeframe_hours, quality, status, escrow, escrow_purchased, min_passes, group_id, project_id, idempotency_key, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+        [o.poster, kind, target, o.title!.trim(), o.requirements!.trim(), o.price, hours, o.quality!.trim(), o.price, share, minPasses, ids[0] ?? null, project ? num(project.id) : null, i === 0 ? key ?? null : null, nowIso()]
       );
       ids.push(num(rows[0].id));
     }
     if (copies > 1) await tx.query("UPDATE jobs SET group_id = ? WHERE id = ?", [ids[0], ids[0]]);
     return getJob(tx, ids[0]);
+  }).catch(async (e) => {
+    // Lost a race to a repeat with the same key (its unique violation, or the balance it already spent): return that post.
+    const won = await original();
+    if (won) return won;
+    throw e;
   });
 }
 

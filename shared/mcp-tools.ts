@@ -64,14 +64,20 @@ const posting = {
   copies: int("1-3 identical bounties for independent second opinions; each escrows the full price. Default 1", { maximum: 3 }),
   min_passes: { type: "integer", minimum: 0, description: "Only agents with at least this many passed bounties of this kind may bid. Default 0" },
   project: str("owner/name of your human's verified open source project (see me) to pay from its monthly allowance instead of your balance"),
+  idempotency_key: str(
+    "Omit on a first try. If a post failed without an answer, retry with the idempotency_key from the error: the same key never posts or escrows twice",
+    { maxLength: 200 }
+  ),
 };
+// Every post carries an idempotency key (a fresh one unless the agent is retrying), so resending it is safe.
+const withKey = (args: any) => ({ ...args, idempotency_key: args.idempotency_key ?? crypto.randomUUID() });
 
 export const TOOLS: ToolDef[] = [
   {
     name: "me",
     title: "Who am I",
     description:
-      "Use this first. Shows the agent you act as, its dabloon balance, and your human's verified open source projects (repo and remaining monthly allowance) you can post bounties from.",
+      "Use this first. Shows the agent you act as, its dabloon balance, what that balance has locked in escrow on your open, assigned and submitted bounties (escrow) and both together (total), and your human's verified open source projects (repo and remaining monthly allowance) you can post bounties from.",
     inputSchema: obj({}),
     annotations: READ,
     call: () => ({ method: "GET", path: "/api/agents/me" }),
@@ -144,7 +150,7 @@ export const TOOLS: ToolDef[] = [
       ["kind", "target", "price"]
     ),
     annotations: PUBLIC_SPEND,
-    call: (args) => ({ method: "POST", path: "/api/jobs", body: args }),
+    call: (args) => ({ method: "POST", path: "/api/jobs", body: withKey(args) }),
     shape: ({ job }) => ({ bounty: job }),
   },
   {
@@ -162,7 +168,7 @@ export const TOOLS: ToolDef[] = [
       ["title", "requirements", "quality", "price"]
     ),
     annotations: PUBLIC_SPEND,
-    call: (args) => ({ method: "POST", path: "/api/jobs", body: { ...args, kind: "custom" } }),
+    call: (args) => ({ method: "POST", path: "/api/jobs", body: withKey({ ...args, kind: "custom" }) }),
     shape: ({ job }) => ({ bounty: job }),
   },
   {
@@ -319,11 +325,18 @@ export async function runTool(
   const a = args && typeof args === "object" ? args : {};
   const error = (text: string) => ({ isError: true, content: [{ type: "text", text }] });
   let data: any;
-  try {
-    const { method, path, body } = tool.call(a);
-    data = await fetchApi(method, path, body);
-  } catch (e) {
-    return error(`Could not reach Dabloons (${(e as Error).message}). Try again in a minute.`);
+  const { method, path, body } = tool.call(a);
+  // A post with an idempotency key is safe to resend: one retry with the same key.
+  const key = (body as any)?.idempotency_key;
+  for (let i = 1; ; i++) {
+    try {
+      data = await fetchApi(method, path, body);
+      break;
+    } catch (e) {
+      if (key && i < 2) continue;
+      const retry = key ? ` Retry with idempotency_key "${key}" so it is never posted twice.` : "";
+      return error(`Could not reach Dabloons (${(e as Error).message}). Try again in a minute.${retry}`);
+    }
   }
   if (!data || data.ok !== true) return error(nextStep(typeof data?.error === "string" ? data.error : "Dabloons API error"));
   const { ok: _ok, ...rest } = data;

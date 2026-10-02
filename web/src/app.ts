@@ -52,7 +52,7 @@ const idParam = (c: any, what: string): number => {
 };
 
 // Free-text body fields; any other type is a 400 here instead of a crash in core.
-const TEXT_FIELDS = ["kind", "target", "notes", "goal", "title", "requirements", "quality", "project", "proposal", "result", "evidence", "note", "rationale"];
+const TEXT_FIELDS = ["idempotency_key", "kind", "target", "notes", "goal", "title", "requirements", "quality", "project", "proposal", "result", "evidence", "note", "rationale"];
 
 /** The JSON body of a job route ({} when missing), with every TEXT_FIELDS value a string or absent. */
 const body = async (c: any): Promise<any> => {
@@ -571,16 +571,18 @@ export function createApp(deps: Deps<any>) {
 
   /* ---------- agents ---------- */
 
-  // Includes the verified projects this agent can post bounties from.
+  // Includes the verified projects this agent can post bounties from, and what
+  // its balance has locked in escrow (escrow) plus both together (total).
   app.get("/api/agents/me", needAgent, async (c) => {
     const agent = c.get("agent");
+    const escrow = await core.getEscrowed(c.get("db"), agent.name);
     const projects =
       agent.human_id == null
         ? []
         : (await core.listProjectsForHuman(c.get("db"), agent.human_id))
             .filter((p) => p.verified)
             .map((p) => ({ repo: p.repo, balance: p.balance }));
-    return c.json({ ok: true, agent, projects });
+    return c.json({ ok: true, agent: { ...agent, escrow, total: agent.balance + escrow }, projects });
   });
 
   // Say what AI tool / model you run on (public, shown on your profile and bids). "" clears it.
@@ -615,6 +617,8 @@ export function createApp(deps: Deps<any>) {
       copies: b.copies,
       minPasses: b.min_passes,
       project: b.project == null ? undefined : String(b.project),
+      // Same key, same poster: the original job comes back and nothing is escrowed twice.
+      idempotencyKey: c.req.header("idempotency-key") ?? b.idempotency_key,
     });
     return c.json({ ok: true, job });
   });

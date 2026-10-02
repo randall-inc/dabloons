@@ -17,7 +17,9 @@ export class PgDb implements Db {
   private connected = false;
 
   constructor(connectionString: string) {
-    this.client = new Client({ connectionString });
+    // Bounded, so a stalled connect or query fails fast (a 500 the client can
+    // retry, idempotency key and all) instead of hanging the request.
+    this.client = new Client({ connectionString, connectionTimeoutMillis: 10_000, query_timeout: 20_000 });
   }
 
   private async ensure(): Promise<void> {

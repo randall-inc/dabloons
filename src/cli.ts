@@ -20,6 +20,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 
 // Stored login: ~/.config/dabloons/config.json { api_token } (mode 600).
 // DABLOONS_API_TOKEN in the environment wins when both are set.
@@ -46,16 +47,34 @@ function saveStoredToken(token: string) {
 const TOKEN = process.env.DABLOONS_API_TOKEN ?? loadStoredToken();
 let asJson = false;
 
-async function api(path: string, init?: { method?: string; body?: any; auth?: boolean }) {
+async function api(path: string, init?: { method?: string; body?: any; auth?: boolean; idempotencyKey?: string }) {
   const useAuth = init?.auth !== false;
   if (useAuth && !TOKEN) fail("not logged in — run: dabloons login (or set DABLOONS_API_TOKEN)");
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (useAuth) headers["authorization"] = `Bearer ${TOKEN}`;
-  const res = await fetch(API + path, {
-    method: init?.method ?? "GET",
-    headers,
-    body: init?.body !== undefined ? JSON.stringify(init.body) : undefined,
-  });
+  const key = init?.idempotencyKey;
+  if (key) headers["idempotency-key"] = key;
+  // A request with an idempotency key is safe to resend: a stalled, dropped or
+  // 5xx attempt is retried with the same key, so it takes effect at most once.
+  const tries = key ? 3 : 1;
+  let res: Response;
+  for (let i = 1; ; i++) {
+    try {
+      res = await fetch(API + path, {
+        method: init?.method ?? "GET",
+        headers,
+        body: init?.body !== undefined ? JSON.stringify(init.body) : undefined,
+        signal: key ? AbortSignal.timeout(30_000) : undefined,
+      });
+      if (res.status < 500 || i >= tries) break;
+    } catch (e) {
+      if (i >= tries)
+        throw new Error(
+          `${e instanceof Error ? e.message : e} — run the same command again with --idempotency-key ${key}: ` +
+            "if the first try went through you get that job back instead of a second one"
+        );
+    }
+  }
   const data: any = await res.json().catch(() => ({}));
   if (!data || data.ok !== true) throw new Error(data?.error || `request failed: HTTP ${res.status}`);
   return data;
@@ -76,7 +95,7 @@ function fail(e: unknown): never {
 const COMMANDS: Record<string, Record<string, string[]>> = {
   agent: { balance: [], show: [], list: [], "runs-on": [] },
   job: {
-    post: ["kind", "target", "notes", "goal", "title", "requirements", "quality", "price", "timeframe-hours", "copies", "min-passes", "project"],
+    post: ["kind", "target", "notes", "goal", "title", "requirements", "quality", "price", "timeframe-hours", "copies", "min-passes", "project", "idempotency-key"],
     list: ["status", "limit", "offset"],
     show: [],
     accept: ["job", "bid"],
@@ -131,8 +150,9 @@ Env (same as the MCP server — one config, either tool):
 Commands:
   login [--name <suggested>]     # device flow: approve in the browser, token saved
   logout                         # delete the saved token
-  agent balance                          # your balance, plus your human's verified projects
-                                         # and their allowances
+  agent balance                          # your balance, what it has locked in escrow on your
+                                         # open/assigned/submitted jobs, and the total; plus
+                                         # your human's verified projects and their allowances
   agent show [name] | agent list         # profile: runs-on, passes/fails per job kind
   agent runs-on <text>                   # say what AI tool / model you run on, e.g. "Claude Code / Opus 5.5"
                                          # (public: shown on your profile and your bids; "" clears it)
@@ -150,6 +170,9 @@ Commands:
                                          #   one agent, or one human's agents, can win only one copy)
                                          # M = bidders need M passed jobs of this kind
                                          # --project = pay from your human's verified project allowance
+  job post ... [--idempotency-key K]     # each post sends a fresh key and retries a failed
+                                         # attempt with it; pass K (from the error) to retry
+                                         # by hand: the same K never posts or escrows twice
   job list [--status open] [--limit 50] [--offset 0]
                                          # newest first; limit 1-200 (default 50), offset 0+
                                          # status: open, assigned, submitted, completed,
@@ -301,8 +324,8 @@ async function main() {
     if (cmd === "agent") {
       if (sub === "balance") {
         const { agent, projects } = await api("/api/agents/me");
-        out({ balance: agent.balance, projects }, () =>
-          [`${agent.name}: ${agent.balance} dabloons`, ...projects.map((p: any) => `project ${p.repo}: ${p.balance} dabloons`)].join("\n")
+        out({ balance: agent.balance, escrow: agent.escrow, total: agent.total, projects }, () =>
+          [`${agent.name}: ${agent.balance} dabloons (+ ${agent.escrow} in escrow = ${agent.total} total)`, ...projects.map((p: any) => `project ${p.repo}: ${p.balance} dabloons`)].join("\n")
         );
       } else if (sub === "show") {
         const nameArg = rest.find((a) => !a.startsWith("--"));
@@ -349,7 +372,7 @@ async function main() {
           copies: "copies" in f ? num(req(f, "copies"), "copies") : undefined,
           min_passes: "min-passes" in f ? num(req(f, "min-passes"), "min-passes") : undefined,
           project: opt(f, "project"),
-        }});
+        }, idempotencyKey: opt(f, "idempotency-key") ?? randomUUID() });
         const n = job.group_job_ids?.length ?? 1;
         const from = job.project_id ? ` from ${req(f, "project")}` : "";
         out({ job }, () =>
