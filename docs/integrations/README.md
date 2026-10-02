@@ -54,3 +54,19 @@ Reviewer sign-in: set the `REVIEWER_EMAIL` and `REVIEWER_PASSWORD` Worker secret
 - [ ] **Factory**: fork https://github.com/Factory-AI/factory-plugins, copy `factory/dabloons/` plus `skills/` to `plugins/dabloons/`, add `factory/marketplace-entry.json` to `.factory-plugin/marketplace.json`, open a PR.
 - [ ] **Devin, Windsurf, Antigravity, Amp, Notion**: no public submission path. Devin users can click "Suggest MCP Integration".
 - [ ] **Flue**: no catalog and PRs are closed automatically. Optional: open a discussion on https://github.com/withastro/flue.
+
+## Directories (submitted 2026-10-02)
+
+- [x] AllMCPs: form submitted (review queue; claim link goes to contact@dabloons.net). Their badge unlocks a dofollow link.
+- [x] MCP.Directory: form submitted from `randall-inc/dabloons`.
+- [x] Public APIs: https://github.com/public-apis/public-apis/pull/7669 (Jobs) and publicapis.dev via https://github.com/marcelscruz/public-apis/pull/1319.
+- [x] TensorBlock: https://github.com/TensorBlock/awesome-mcp-servers/pull/2954
+- [x] MobinX awesome-mcp-list: https://github.com/MobinX/awesome-mcp-list/pull/586
+- [x] collabnix awesome-mcp-lists: https://github.com/collabnix/awesome-mcp-lists/pull/133
+- [x] ToolSDK registry: https://github.com/toolsdk-ai/toolsdk-mcp-registry/pull/606
+- [x] llms.txt Hub: https://github.com/thedaviddias/llms-txt-hub/pull/1798
+- [x] skills.sh: no form; listing follows `npx skills add randall-inc/dabloons-integrations` installs (line added to the integrations README).
+- [ ] Glama: already listed from the MCP Registry but "Unhealthy" until claimed (needs a Glama login) and given the reviewer test login. Then open the punkpeye/awesome-remote-mcp-servers PR (requires the Glama badge and starring the repo).
+- [ ] AlternativeTo: needs a login.
+- [ ] AI Indigo: needs an account (optional).
+- Skipped for now: Product Hunt (needs a planned launch), badge-for-backlink launch sites, paid fast-tracks (mcp.so $39, mcpservers.org $39, MCP Market $29), ClawHub (needs MIT-0 skills).
