@@ -145,6 +145,10 @@ async function lockJob(tx: TxDb, id: number) {
   return { ...normJob(rows[0]), escrow_purchased: num(rows[0].escrow_purchased) };
 }
 
+/** Lock a job and every copy of it, in id order, so accepts, cancels and expiry on one group serialize. */
+const lockGroup = (tx: TxDb, id: number) =>
+  tx.query("SELECT id FROM jobs WHERE id = ? OR group_id = (SELECT group_id FROM jobs WHERE id = ?) ORDER BY id FOR UPDATE", [id, id]);
+
 /* ---------- purchased vs earned ----------
  * balance is the total; purchased_balance is the part bought through Stripe
  * (the only part that may ever be refunded); earned = balance - purchased.
@@ -943,12 +947,18 @@ export async function placeBid(db: Db, o: { bidder: string; jobId: number; propo
       );
   }
 
-  const rows = await db.query(
-    "INSERT INTO bids (job_id, bidder, proposal, price, status, created_at) VALUES (?, ?, ?, ?, 'pending', ?) RETURNING id",
-    [o.jobId, o.bidder, o.proposal.trim(), o.price ?? null, nowIso()]
-  );
-  const bidRows = await db.query("SELECT * FROM bids WHERE id = ?", [num(rows[0].id)]);
-  return normBid(bidRows[0]);
+  // Insert under a share lock on the job, re-checking it is still open, so a
+  // bid can't land on a job a concurrent accept, cancel or expiry just closed
+  // (and an expiry waits for it, then sees it as fresh activity).
+  return db.transaction(async (tx) => {
+    const [j] = await tx.query("SELECT status FROM jobs WHERE id = ? FOR SHARE", [o.jobId]);
+    if (j.status !== "open") throw new Error(`job ${o.jobId} is not open for bids (status: ${j.status})`);
+    const rows = await tx.query(
+      "INSERT INTO bids (job_id, bidder, proposal, price, status, created_at) VALUES (?, ?, ?, ?, 'pending', ?) RETURNING *",
+      [o.jobId, o.bidder, o.proposal.trim(), o.price ?? null, nowIso()]
+    );
+    return normBid(rows[0]);
+  });
 }
 
 /** Bids on a job, or on every copy of it (a bid on any copy can be accepted onto any open copy), oldest first, a page at a time (q: limit, cursor). */
@@ -979,10 +989,7 @@ export async function listBids(db: TxDb, jobId: number, q: Query = {}) {
 export async function acceptBid(db: Db, o: { poster: string; jobId: number; bidId: number }) {
   return db.transaction(async (tx) => {
     // Lock every copy, in id order, so two accepts in one group serialize.
-    await tx.query(
-      "SELECT id FROM jobs WHERE id = ? OR group_id = (SELECT group_id FROM jobs WHERE id = ?) ORDER BY id FOR UPDATE",
-      [o.jobId, o.jobId]
-    );
+    await lockGroup(tx, o.jobId);
     const job = await lockJob(tx, o.jobId);
     if (job.poster !== o.poster) throw new Error("only the poster can accept a bid on this job");
     if (job.status !== "open") throw new Error(`job ${o.jobId} is not open (status: ${job.status})`);
@@ -1217,24 +1224,74 @@ export async function requestChanges(db: Db, o: { poster: string; jobId: number;
 /** Poster cancels an open job: its escrow refunds to the poster. */
 export async function cancelJob(db: Db, o: { poster: string; jobId: number }) {
   return db.transaction(async (tx) => {
-    // Lock every copy, in id order (as acceptBid), so the open-copy check below sees settled statuses.
-    await tx.query(
-      "SELECT id FROM jobs WHERE id = ? OR group_id = (SELECT group_id FROM jobs WHERE id = ?) ORDER BY id FOR UPDATE",
-      [o.jobId, o.jobId]
-    );
+    // Lock every copy, in id order (as acceptBid), so the open-copy check in closeOpenJob sees settled statuses.
+    await lockGroup(tx, o.jobId);
     const job = await lockJob(tx, o.jobId);
     if (job.poster !== o.poster) throw new Error("only the poster can cancel this job");
     if (job.status !== "open") throw new Error(`job ${o.jobId} cannot be cancelled (status: ${job.status})`);
-    await refundEscrow(tx, job);
-    await tx.query("UPDATE jobs SET status = 'cancelled', escrow = 0, escrow_purchased = 0 WHERE id = ?", [o.jobId]);
-    // Pending bids are rejected once no copy is left open (always, for a lone job), as in acceptBid.
-    await tx.query(
-      `UPDATE bids SET status = 'rejected' WHERE status = 'pending' AND job_id IN (SELECT id FROM jobs WHERE id = ? OR group_id = ?)
-       AND NOT EXISTS (SELECT 1 FROM jobs WHERE group_id = ? AND status = 'open')`,
-      [o.jobId, job.group_id, job.group_id]
-    );
+    await closeOpenJob(tx, job, "status = 'cancelled'");
     return getJob(tx, o.jobId);
   });
+}
+
+/**
+ * Close a locked open job (its copies locked too): escrow back to where it
+ * came from, `set` applied, and pending bids rejected once no copy is left
+ * open (always, for a lone job), as in acceptBid. Cancel and expiry share it.
+ */
+async function closeOpenJob(tx: TxDb, job: any, set: string, params: unknown[] = []) {
+  await refundEscrow(tx, job);
+  await tx.query(`UPDATE jobs SET ${set}, escrow = 0, escrow_purchased = 0 WHERE id = ?`, [...params, job.id]);
+  await tx.query(
+    `UPDATE bids SET status = 'rejected' WHERE status = 'pending' AND job_id IN (SELECT id FROM jobs WHERE id = ? OR group_id = ?)
+     AND NOT EXISTS (SELECT 1 FROM jobs WHERE group_id = ? AND status = 'open')`,
+    [job.id, job.group_id, job.group_id]
+  );
+}
+
+/** Hours an open job lives with no new activity: posted, or bid on (any copy). */
+export const OPEN_JOB_IDLE_HOURS = 24;
+
+/** SQL on `jobs`: its latest activity — when it was posted, or the latest bid on any of its copies. */
+const LAST_ACTIVITY = `GREATEST(jobs.created_at,
+  (SELECT MAX(b.created_at) FROM bids b WHERE b.job_id IN (SELECT g.id FROM jobs g WHERE g.id = jobs.id OR g.group_id = jobs.group_id)))`;
+
+/**
+ * Expire open jobs (no accepted bid) idle for OPEN_JOB_IDLE_HOURS: no bid on
+ * any copy since then, so bids left unaccepted that long expire it too. Each
+ * open copy expires on its own. Expiring refunds exactly like a cancel
+ * (closeOpenJob: escrow to the poster or the project, within the project's
+ * cap; pending bids rejected once no copy is open) and marks the job refunded
+ * by the system, as a missed deadline is. At most `batch` per run, one
+ * transaction each; a job that fails is logged and the rest go on.
+ * System-owned; runs on the cron next to sweepExpired.
+ */
+export async function sweepIdleOpenJobs(db: Db, batch = 500) {
+  const cutoff = () => new Date(Date.now() - OPEN_JOB_IDLE_HOURS * 3600_000).toISOString();
+  const rows = await db.query(`SELECT id FROM jobs WHERE status = 'open' AND ${LAST_ACTIVITY} < ? ORDER BY id LIMIT ?`, [
+    cutoff(),
+    batch,
+  ]);
+  const expired: number[] = [];
+  for (const r of rows) {
+    try {
+      const done = await db.transaction(async (tx) => {
+        await lockGroup(tx, num(r.id));
+        const job = await lockJob(tx, num(r.id));
+        // Re-check under the locks: an accept, cancel or new bid (placeBid holds the job's share lock) may have landed since the scan.
+        if (job.status !== "open") return false;
+        if (!(await tx.query(`SELECT 1 FROM jobs WHERE id = ? AND ${LAST_ACTIVITY} < ?`, [job.id, cutoff()])).length) return false;
+        await closeOpenJob(tx, job, "status = 'refunded', verdict = 'fail', verdict_by = 'system', verdict_rationale = ?", [
+          `expired: no bid accepted and no new bid for ${OPEN_JOB_IDLE_HOURS} hours; escrow refunded`,
+        ]);
+        return true;
+      });
+      if (done) expired.push(num(r.id));
+    } catch (e) {
+      console.error(`expiring open job ${r.id} failed`, e);
+    }
+  }
+  return { expired };
 }
 
 /**

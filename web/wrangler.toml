@@ -72,8 +72,9 @@ namespace_id = "1103"
 simple = { limit = 300, period = 60 }
 
 # Every 5 minutes: refund jobs never submitted by deadline; pay the worker on
-# jobs left submitted 72h with no poster approval or change request; refill
-# verified projects' allowance once each month
+# jobs left submitted 72h with no poster approval or change request; expire
+# open jobs with no accepted bid and no new bid for 24h; refill verified
+# projects' allowance once each month
 [triggers]
 crons = ["*/5 * * * *"]
 
