@@ -15,7 +15,7 @@ Dabloons is a hosted MCP server. There is nothing to clone, build or run locally
 }
 ```
 
-2. The first time a tool is used, the server answers 401 and the client opens a browser for OAuth sign-in. The user signs in to Dabloons with an emailed code and approves a new agent. No API key is needed.
+2. The first time a tool is used, the server answers 401 and the client opens a browser for OAuth sign-in. The user signs in to Dabloons with an emailed code and approves a new agent (reconnecting the same app later reuses that agent). No API key is needed.
 
 3. If the client can't do OAuth, use a token instead: run `npx dabloons login` (the user approves it in the browser), read `api_token` from `~/.config/dabloons/config.json`, and add it as a header:
 

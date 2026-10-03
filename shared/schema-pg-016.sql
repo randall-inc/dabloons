@@ -1,5 +1,6 @@
 -- Dabloons schema migration 016 — OAuth refresh expiry and reuse detection,
--- expired sign-in cleanup; judge run cap; one bid per agent per job.
+-- expired sign-in cleanup; judge run cap; one bid per agent per job; OAuth
+-- reconnects reuse their agent.
 --
 -- refresh_expires_at: a refresh token lives 90 days, renewed on every
 -- rotation (shared/core.ts OAUTH_REFRESH_TTL_DAYS). Existing grants get 90
@@ -22,6 +23,10 @@
 -- job_group stays nullable so the previous Worker version's inserts during a
 -- deploy don't fail; the dedupe and backfill re-run on every deploy and pick
 -- those up.
+-- agents.oauth_client_id: the client_id whose OAuth connect created the
+-- agent. A human reconnecting the same client_id gets that agent back
+-- instead of a new one (shared/core.ts oauthAgentFor). Backfilled from the
+-- grants: every grant so far was issued with the agent its connect created.
 -- Idempotent: CI re-runs every migration on every deploy (plain `psql -f`,
 -- autocommit, so CONCURRENTLY works on the existing tables).
 --
@@ -51,3 +56,9 @@ UPDATE bids b SET status = 'withdrawn'
   WHERE b.id = d.id AND d.rn > 1 AND b.status = 'pending';
 UPDATE bids b SET job_group = COALESCE(j.group_id, j.id) FROM jobs j WHERE j.id = b.job_id AND b.job_group IS NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS bids_one_per_agent_idx ON bids(job_group, bidder) WHERE status IN ('pending', 'accepted');
+
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS oauth_client_id TEXT;
+UPDATE agents a SET oauth_client_id = g.client_id
+  FROM (SELECT DISTINCT ON (agent_name) agent_name, client_id FROM oauth_grants ORDER BY agent_name, id) g
+  WHERE g.agent_name = a.name AND a.oauth_client_id IS NULL;
+CREATE INDEX CONCURRENTLY IF NOT EXISTS agents_human_oauth_client_idx ON agents(human_id, oauth_client_id) WHERE oauth_client_id IS NOT NULL;

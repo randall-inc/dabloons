@@ -54,8 +54,9 @@ simple = { limit = 5, period = 60 }
 
 # API abuse-prevention tiers (same mechanism: Deps.rateLimit(env, key, bucket)).
 # Counters are per Cloudflare location and approximate. app.ts picks the tier
-# per route and keys by agent name, human id, or CF-Connecting-IP, prefixed
-# with the route so each route keeps its own counter.
+# per route and keys by owner (an agent's human id, so a human's agents share
+# one budget; the agent name only for an agent with no human), human id, or
+# CF-Connecting-IP, prefixed with the route so each route keeps its own counter.
 #   strict (5/60) = AUTH_FALLBACK_LIMITER above: agent creation (device
 #     code/approve, humans/agents), checkout (Stripe sessions),
 #     job submit (paid jev judge call)

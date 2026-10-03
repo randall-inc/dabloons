@@ -184,12 +184,19 @@ export function createApp(deps: Deps<any>) {
 
   /* ---------- rate limits ----------
    * limit(bucket, route, who): 429 once the caller's counter for this route is
-   * spent. Runs after auth, so the key is the most specific identity:
-   * agent name > human id > client IP. Not applied to the Stripe webhook
+   * spent. Runs after auth. The Workers rate-limit binding counts any string
+   * key, so the key is "<route>:<who>" (every route keeps its own counter)
+   * and who is the owner: agent writes count against the agent's human, so
+   * one human's agents share one budget per route instead of getting one
+   * each (an agent with no human counts on its own); human routes key by
+   * human id; anonymous ones by client IP. Not applied to the Stripe webhook
    * (signed, Stripe retries), admin routes, or /api/health.
    */
   const byIp = (c: any) => "ip:" + (c.req.header("cf-connecting-ip") || "unknown");
-  const byAgent = (c: any) => "agent:" + c.get("agent").name;
+  const byOwner = (c: any) => {
+    const a = c.get("agent");
+    return a.human_id != null ? "human:" + a.human_id : "agent:" + a.name;
+  };
   const byHuman = (c: any) => "human:" + c.get("human").id;
   const limit =
     (bucket: Bucket, route: string, who: (c: any) => string) => async (c: any, next: any) => {
@@ -670,7 +677,7 @@ export function createApp(deps: Deps<any>) {
   });
 
   // Say what AI tool / model you run on (public, shown on your profile and bids). "" clears it.
-  app.patch("/api/agents/me", needAgent, limit("write", "agent-me", byAgent), async (c) => {
+  app.patch("/api/agents/me", needAgent, limit("write", "agent-me", byOwner), async (c) => {
     const { runs_on } = await c.req.json().catch(() => ({} as any));
     return c.json({ ok: true, agent: await core.setRunsOn(c.get("db"), c.get("agent").name, runs_on) });
   });
@@ -685,7 +692,7 @@ export function createApp(deps: Deps<any>) {
 
   /* ---------- jobs ---------- */
 
-  app.post("/api/jobs", needAgent, limit("write", "post-job", byAgent), async (c) => {
+  app.post("/api/jobs", needAgent, limit("write", "post-job", byOwner), async (c) => {
     const b = await body(c);
     const job = await core.postJob(c.get("db"), {
       poster: c.get("agent").name,
@@ -717,7 +724,7 @@ export function createApp(deps: Deps<any>) {
     return c.json({ ok: true, job: seeJob(c, await core.getJob(c.get("db"), idParam(c, "job"))) });
   });
 
-  app.post("/api/jobs/:id/bids", needAgent, limit("write", "bid", byAgent), async (c) => {
+  app.post("/api/jobs/:id/bids", needAgent, limit("write", "bid", byOwner), async (c) => {
     const { proposal, price } = await body(c);
     const bid = await core.placeBid(c.get("db"), {
       bidder: c.get("agent").name,
@@ -729,7 +736,7 @@ export function createApp(deps: Deps<any>) {
   });
 
   // Withdraw your own pending bid.
-  app.delete("/api/jobs/:id/bids/:bid_id", needAgent, limit("write", "withdraw-bid", byAgent), async (c) => {
+  app.delete("/api/jobs/:id/bids/:bid_id", needAgent, limit("write", "withdraw-bid", byOwner), async (c) => {
     const bidId = c.req.param("bid_id");
     if (!/^\d{1,15}$/.test(bidId)) throw new Error("invalid bid id");
     const bid = await core.withdrawBid(c.get("db"), {
@@ -744,7 +751,7 @@ export function createApp(deps: Deps<any>) {
     return c.json({ ok: true, ...(await core.listBids(c.get("db"), idParam(c, "job"), c.req.query())) });
   });
 
-  app.post("/api/jobs/:id/accept", needAgent, limit("write", "accept", byAgent), async (c) => {
+  app.post("/api/jobs/:id/accept", needAgent, limit("write", "accept", byOwner), async (c) => {
     const { bid_id } = await body(c);
     if (bid_id == null) throw new Error("bid_id is required");
     if (!Number.isInteger(bid_id) || bid_id < 0) throw new Error("invalid bid id");
@@ -758,7 +765,7 @@ export function createApp(deps: Deps<any>) {
 
   // strict: a submission may call the paid external judge (jev): custom jobs
   // between different humans, at most core.JUDGE_RUN_CAP times per job.
-  app.post("/api/jobs/:id/submit", needAgent, limit("strict", "submit", byAgent), async (c) => {
+  app.post("/api/jobs/:id/submit", needAgent, limit("strict", "submit", byOwner), async (c) => {
     const { result, evidence } = await body(c);
     const jobId = idParam(c, "job");
     const submitted: any = await core.submitWork(c.get("db"), {
@@ -783,7 +790,7 @@ export function createApp(deps: Deps<any>) {
     return c.json({ ok: true, job: submitted, judged: false });
   });
 
-  app.post("/api/jobs/:id/cancel", needAgent, limit("write", "cancel", byAgent), async (c) => {
+  app.post("/api/jobs/:id/cancel", needAgent, limit("write", "cancel", byOwner), async (c) => {
     const job = await core.cancelJob(c.get("db"), {
       poster: c.get("agent").name,
       jobId: idParam(c, "job"),
@@ -791,7 +798,7 @@ export function createApp(deps: Deps<any>) {
     return c.json({ ok: true, job });
   });
 
-  app.post("/api/jobs/:id/approve", needAgent, limit("write", "approve", byAgent), async (c) => {
+  app.post("/api/jobs/:id/approve", needAgent, limit("write", "approve", byOwner), async (c) => {
     const { rationale } = await body(c);
     const job = await core.approveJob(c.get("db"), {
       poster: c.get("agent").name,
@@ -801,7 +808,7 @@ export function createApp(deps: Deps<any>) {
     return c.json({ ok: true, job });
   });
 
-  app.post("/api/jobs/:id/request-changes", needAgent, limit("write", "request-changes", byAgent), async (c) => {
+  app.post("/api/jobs/:id/request-changes", needAgent, limit("write", "request-changes", byOwner), async (c) => {
     const { note, hours } = await body(c);
     const job = await core.requestChanges(c.get("db"), {
       poster: c.get("agent").name,
@@ -901,7 +908,7 @@ export function createApp(deps: Deps<any>) {
           redirectUri: p.redirect_uri,
           verifier: p.code_verifier,
         });
-        await fundReviewerAgent(c.env, db, r.humanId, r.agentName);
+        if (!r.reused) await fundReviewerAgent(c.env, db, r.humanId, r.agentName);
         tokens = r.tokens;
       } else if (p.grant_type === "refresh_token") {
         if (!p.refresh_token) return err("invalid_request", "refresh_token is required");
@@ -919,7 +926,9 @@ export function createApp(deps: Deps<any>) {
   // The consent page (dashboard route /authorize) reads the request from its URL.
   app.get("/authorize", publicRead, spa);
 
-  // Consent page, step 1: who is asking, and where approving or cancelling returns to.
+  // Consent page, step 1: who is asking, and where approving or cancelling
+  // returns to. With the human's session (the consent page sends it),
+  // existing_agent names the agent a reconnect from this client will reuse.
   app.get("/api/oauth/client", publicRead, async (c) => {
     const q = c.req.query();
     const client = q.client_id ? await oauth.resolveClient(q.client_id) : null;
@@ -932,11 +941,14 @@ export function createApp(deps: Deps<any>) {
     cancel.searchParams.set("error", "access_denied");
     if (q.state) cancel.searchParams.set("state", q.state);
     cancel.searchParams.set("iss", origin(c));
+    const token = bearer(c);
+    const human = token ? await core.getHumanBySessionToken(c.get("db"), token) : null;
     return c.json({
       ok: true,
       client_name: client.client_name,
       redirect_host: new URL(q.redirect_uri).host || q.redirect_uri,
       suggested_name: await core.suggestAgentName(c.get("db"), client.client_name),
+      existing_agent: human ? await core.oauthAgentFor(c.get("db"), human.id, q.client_id) : null,
       cancel_url: cancel.toString(),
     });
   });
@@ -949,7 +961,7 @@ export function createApp(deps: Deps<any>) {
     if (b.code_challenge_method !== "S256") throw new Error("PKCE S256 is required");
     const client = await oauth.resolveClient(b.client_id);
     if (!client || !oauth.redirectAllowed(client, b.redirect_uri)) throw new Error("unknown client or return address");
-    const code = await core.createOAuthCode(c.get("db"), {
+    const { code, agentName, reused } = await core.createOAuthCode(c.get("db"), {
       humanId: c.get("human").id,
       clientId: b.client_id,
       redirectUri: b.redirect_uri,
@@ -960,7 +972,7 @@ export function createApp(deps: Deps<any>) {
     back.searchParams.set("code", code);
     if (typeof b.state === "string" && b.state) back.searchParams.set("state", b.state);
     back.searchParams.set("iss", origin(c));
-    return c.json({ ok: true, redirect: back.toString() });
+    return c.json({ ok: true, redirect: back.toString(), agent_name: agentName, reused });
   });
 
   const mcpUnauthorized = (c: any) =>
