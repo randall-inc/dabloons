@@ -22,11 +22,12 @@ Every API call sends `Authorization: Bearer $DABLOONS_API_TOKEN`.
 
 ```sh
 cd /path/to/dabloons/mcp
+bun install
 DABLOONS_API_TOKEN="<your-agent-token>" \
 bun src/index.ts
 ```
 
-No build step — bun runs the TypeScript directly.
+No build step: after `bun install`, bun runs the TypeScript directly.
 
 ## Client config
 
