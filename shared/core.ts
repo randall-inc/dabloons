@@ -13,6 +13,53 @@ const nowIso = () => new Date().toISOString();
 const num = (v: any): number => Number(v);
 const iso = (v: any): string | null => (v == null ? null : new Date(v).toISOString());
 
+type Query = Record<string, string | undefined>;
+
+/** A whole-number query parameter from min to max, or undefined when absent; `what` ends the error. */
+function intParam(q: Query, k: string, min: number, max: number, what: string): number | undefined {
+  if (q[k] == null || q[k] === "") return undefined;
+  const n = Number(q[k]);
+  if (!Number.isInteger(n) || n < min || n > max) throw new Error(`${k} must be a whole number${what}`);
+  return n;
+}
+
+/** true/false (or 1/0) query parameter; absent = false. */
+function boolParam(q: Query, k: string): boolean {
+  const v = q[k];
+  if (v == null || v === "" || v === "false" || v === "0") return false;
+  if (v === "true" || v === "1") return true;
+  throw new Error(`${k} must be true or false`);
+}
+
+/* ---------- keyset paging ----------
+ * A list page is up to `limit` rows plus has_more and next_cursor: an opaque
+ * token holding the list's sort and the last row's sort key. The next page
+ * starts strictly after that row, so rows added or settled in between never
+ * shift a page or show twice (OFFSET paging did both).
+ */
+
+const LIMIT = (q: Query) => intParam(q, "limit", 1, 200, " from 1 to 200 (default 50)") ?? 50;
+const toCursor = (...v: unknown[]) => btoa(JSON.stringify(v)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+
+/** The sort-key values in cursor `raw`, checked by `ok`; null when absent. A cursor from another list or sort is a 400. */
+function fromCursor(raw: string | undefined, sort: string, ok: (...v: any[]) => boolean): any[] | null {
+  if (raw == null || raw === "") return null;
+  try {
+    const [s, ...v] = JSON.parse(atob(raw.replace(/-/g, "+").replace(/_/g, "/")));
+    if (s === sort && ok(...v)) return v;
+  } catch {}
+  throw new Error("invalid cursor: pass next_cursor from the previous page unchanged, with the same sort");
+}
+
+/** Rows fetched with LIMIT limit + 1 -> one page; key(last row) is what the next page starts after. */
+function page(rows: any[], limit: number, sort: string, key: (r: any) => unknown[]) {
+  const items = rows.slice(0, limit);
+  const has_more = rows.length > limit;
+  return { items, has_more, next_cursor: has_more ? toCursor(sort, ...key(items[items.length - 1])) : null };
+}
+
+const isId = (v: unknown) => Number.isSafeInteger(v);
+
 function normJob(j: any) {
   // escrow_purchased is internal bookkeeping: public job views show one escrow total.
   const { escrow_purchased, ...rest } = j;
@@ -411,20 +458,51 @@ export async function getEscrowed(db: TxDb, name: string): Promise<number> {
   return num(rows[0].n);
 }
 
-export async function listAgents(db: TxDb) {
-  const rows = await db.query(`SELECT ${PUBLIC_AGENT_FIELDS.join(", ")} FROM agents ORDER BY name`);
-  return rows.map((r: any) => publicAgent(normAgent(r)));
+/** Every agent by name, a page at a time (q: limit, cursor). */
+export async function listAgents(db: TxDb, q: Query = {}) {
+  const limit = LIMIT(q);
+  const after = fromCursor(q.cursor, "name", (n) => typeof n === "string");
+  const rows = await db.query(
+    `SELECT ${PUBLIC_AGENT_FIELDS.join(", ")} FROM agents ${after ? "WHERE name > ?" : ""} ORDER BY name LIMIT ?`,
+    [...(after ?? []), limit + 1]
+  );
+  const { items, ...rest } = page(rows, limit, "name", (a) => [a.name]);
+  return { agents: items.map((r: any) => publicAgent(normAgent(r))), ...rest };
 }
 
-/** Identity profile: everything this agent has done, in one place. */
-export async function getAgentProfile(db: TxDb, name: string) {
+/** Rows per list on an agent profile. */
+const PROFILE_PAGE = 20;
+
+/**
+ * Identity profile: everything this agent has done, in one place. posted,
+ * worked and bids are the newest PROFILE_PAGE of each, with their own
+ * cursors (q: posted_cursor, worked_cursor, bids_cursor); totals and the
+ * record are counted over all of them.
+ */
+export async function getAgentProfile(db: TxDb, name: string, q: Query = {}) {
   const agent = await getBalance(db, name);
   const cols = "id, kind, group_id, title, status, price, escrow, timeframe_hours, deadline, submitted_at, created_at";
-  const posted = await db.query(`SELECT ${cols} FROM jobs WHERE poster = ? ORDER BY id DESC`, [name]);
-  const worked = await db.query(`SELECT ${cols}, verdict FROM jobs WHERE worker = ? ORDER BY id DESC`, [name]);
-  const bids = await db.query(
-    "SELECT b.id, b.job_id, b.price, b.status, j.title FROM bids b JOIN jobs j ON j.id = b.job_id WHERE b.bidder = ? ORDER BY b.id DESC",
-    [name]
+  const list = async (which: string, sql: string, idCol: string) => {
+    const before = fromCursor(q[`${which}_cursor`], which, isId);
+    const rows = await db.query(
+      `${sql} ${before ? `AND ${idCol} < ?` : ""} ORDER BY ${idCol} DESC LIMIT ?`,
+      [name, ...(before ?? []), PROFILE_PAGE + 1]
+    );
+    return page(rows, PROFILE_PAGE, which, (r) => [num(r.id)]);
+  };
+  const posted = await list("posted", `SELECT ${cols} FROM jobs WHERE poster = ?`, "id");
+  const worked = await list("worked", `SELECT ${cols}, verdict FROM jobs WHERE worker = ?`, "id");
+  const bids = await list(
+    "bids",
+    "SELECT b.id, b.job_id, b.price, b.status, j.title FROM bids b JOIN jobs j ON j.id = b.job_id WHERE b.bidder = ?",
+    "b.id"
+  );
+  const [t] = await db.query(
+    `SELECT (SELECT COUNT(*) FROM jobs WHERE poster = ?) AS posted, (SELECT COUNT(*) FROM jobs WHERE worker = ?) AS worked,
+       (SELECT COUNT(*) FROM bids WHERE bidder = ?) AS bids,
+       (SELECT COUNT(*) FROM jobs WHERE worker = ? AND verdict = 'pass') AS completed,
+       (SELECT COUNT(*) FROM jobs WHERE worker = ? AND verdict = 'fail') AS failed`,
+    [name, name, name, name, name]
   );
   // Passes and fails per job kind, from settled jobs this agent worked at arm's length.
   const settled = await db.query(
@@ -441,14 +519,13 @@ export async function getAgentProfile(db: TxDb, name: string) {
   };
   return {
     ...publicAgent(agent),
-    posted: posted.map(row),
-    worked: worked.map(row),
-    bids: bids.map(normBid),
-    reputation: {
-      completed: worked.filter((j: any) => j.verdict === "pass").length,
-      failed: worked.filter((j: any) => j.verdict === "fail").length,
-      by_kind: byKind,
-    },
+    posted: posted.items.map(row),
+    worked: worked.items.map(row),
+    bids: bids.items.map(normBid),
+    totals: { posted: num(t.posted), worked: num(t.worked), bids: num(t.bids) },
+    has_more: { posted: posted.has_more, worked: worked.has_more, bids: bids.has_more },
+    next_cursor: { posted: posted.next_cursor, worked: worked.next_cursor, bids: bids.next_cursor },
+    reputation: { completed: num(t.completed), failed: num(t.failed), by_kind: byKind },
   };
 }
 
@@ -750,24 +827,6 @@ const LIST_COLS =
   "deadline, submitted_at, verdict, verdict_by, verdict_rationale, feedback, project_id, group_id, min_passes, created_at, " +
   "(SELECT array_agg(g.id ORDER BY g.id) FROM jobs g WHERE g.group_id = jobs.group_id) AS group_job_ids";
 
-type Query = Record<string, string | undefined>;
-
-/** A whole-number query parameter from min to max, or undefined when absent; `what` ends the error. */
-function intParam(q: Query, k: string, min: number, max: number, what: string): number | undefined {
-  if (q[k] == null || q[k] === "") return undefined;
-  const n = Number(q[k]);
-  if (!Number.isInteger(n) || n < min || n > max) throw new Error(`${k} must be a whole number ${what}`);
-  return n;
-}
-
-/** true/false (or 1/0) query parameter; absent = false. */
-function boolParam(q: Query, k: string): boolean {
-  const v = q[k];
-  if (v == null || v === "" || v === "false" || v === "0") return false;
-  if (v === "true" || v === "1") return true;
-  throw new Error(`${k} must be true or false`);
-}
-
 /** s with LIKE's wildcards (and its escape character) escaped. */
 const likeEscape = (s: string) => s.replace(/[\\%_]/g, "\\$&");
 
@@ -780,12 +839,19 @@ const likeEscape = (s: string) => s.replace(/[\\%_]/g, "\\$&");
  * working, or bid — jobs it has a bid on) and eligible (open jobs it could
  * bid on: not its own, min_passes met as placeBid counts them, not a project
  * bounty it is barred from, and none at all while it is at the active-job cap).
+ * Paged by cursor (limit, cursor -> has_more, next_cursor) in every sort.
  */
 export async function listJobs(db: TxDb, q: Query, me?: { name: string; human_id: number | null }) {
-  const limit = intParam(q, "limit", 1, 200, "from 1 to 200 (default 50)") ?? 50;
+  const limit = LIMIT(q);
+  // offset: deprecated, kept for one release because CLI 0.6.4 sends it; cursors are the way.
   const offset = intParam(q, "offset", 0, Number.MAX_SAFE_INTEGER, ", 0 or more") ?? 0;
   const sort = q.sort || "newest";
   if (!Object.hasOwn(JOB_SORTS, sort)) throw new Error(`sort must be one of: ${Object.keys(JOB_SORTS).join(", ")} (default newest)`);
+  const [key, dir] = JOB_SORTS[sort];
+  const after = fromCursor(q.cursor, sort, (k, id) =>
+    isId(id) && (sort === "deadline" ? k === "infinity" || (typeof k === "string" && !isNaN(Date.parse(k))) : isId(k))
+  );
+  if (after && offset) throw new Error("use cursor or offset, not both (offset is deprecated)");
   const { status, kind, role } = q;
   if (status && !JOB_STATUSES.includes(status)) throw new Error(`status must be one of: ${JOB_STATUSES.join(", ")}`);
   if (kind && kind !== "custom" && !Object.hasOwn(JOB_KINDS, kind)) throw new Error(`kind must be one of: ${KIND_NAMES}`);
@@ -840,13 +906,16 @@ export async function listJobs(db: TxDb, q: Query, me?: { name: string; human_id
     else add("(project_id IS NULL OR project_id NOT IN (SELECT id FROM projects WHERE human_id = ?))", me.human_id);
     if ((await activeJobCount(db, me)) >= ACTIVE_JOB_CAP) add("FALSE");
   }
-  const [key, dir] = JOB_SORTS[sort];
+  // Rows strictly after the cursor's (sort key, id) in this order.
+  if (after) add(`(${key}, id) ${dir === "DESC" ? "<" : ">"} (?, ?)`, ...after);
   const rows = await db.query(
     `SELECT ${LIST_COLS} FROM jobs ${where.length ? "WHERE " + where.join(" AND ") : ""}
      ORDER BY ${key === "id" ? "" : `${key} ${dir}, `}id ${dir} LIMIT ? OFFSET ?`,
-    [...params, limit, offset]
+    [...params, limit + 1, offset]
   );
-  return rows.map(normJob);
+  const sortKey = { id: "id", price: "price" }[key] ?? "deadline";
+  const { items, ...rest } = page(rows.map(normJob), limit, sort, (j) => [j[sortKey] ?? "infinity", j.id]);
+  return { jobs: items, ...rest };
 }
 
 export async function getJob(db: TxDb, id: number) {
@@ -882,15 +951,18 @@ export async function placeBid(db: Db, o: { bidder: string; jobId: number; propo
   return normBid(bidRows[0]);
 }
 
-/** Bids on a job, or on every copy of it: a bid on any copy can be accepted onto any open copy. */
-export async function listBids(db: TxDb, jobId: number) {
+/** Bids on a job, or on every copy of it (a bid on any copy can be accepted onto any open copy), oldest first, a page at a time (q: limit, cursor). */
+export async function listBids(db: TxDb, jobId: number, q: Query = {}) {
   const job = await getJob(db, jobId);
+  const limit = LIMIT(q);
+  const after = fromCursor(q.cursor, "bids", isId);
   const rows = await db.query(
     `SELECT b.*, a.runs_on FROM bids b JOIN agents a ON a.name = b.bidder
-     WHERE b.job_id IN (SELECT id FROM jobs WHERE id = ? OR group_id = ?) ORDER BY b.id`,
-    [jobId, job.group_id]
+     WHERE b.job_id IN (SELECT id FROM jobs WHERE id = ? OR group_id = ?) ${after ? "AND b.id > ?" : ""} ORDER BY b.id LIMIT ?`,
+    [jobId, job.group_id, ...(after ?? []), limit + 1]
   );
-  return rows.map(normBid);
+  const { items, ...rest } = page(rows, limit, "bids", (b) => [num(b.id)]);
+  return { bids: items.map(normBid), ...rest };
 }
 
 /**

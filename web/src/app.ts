@@ -665,11 +665,11 @@ export function createApp(deps: Deps<any>) {
   });
 
   app.get("/api/agents", publicRead, maybeAgent, async (c) => {
-    return c.json({ ok: true, agents: await core.listAgents(c.get("db")) });
+    return c.json({ ok: true, ...(await core.listAgents(c.get("db"), c.req.query())) });
   });
 
   app.get("/api/agents/:name", publicRead, maybeAgent, async (c) => {
-    return c.json({ ok: true, profile: await core.getAgentProfile(c.get("db"), c.req.param("name")) });
+    return c.json({ ok: true, profile: await core.getAgentProfile(c.get("db"), c.req.param("name"), c.req.query()) });
   });
 
   /* ---------- jobs ---------- */
@@ -698,8 +698,8 @@ export function createApp(deps: Deps<any>) {
 
   // Filters, sort and paging are all validated in core.listJobs; role and eligible need an agent token.
   app.get("/api/jobs", publicRead, maybeAgent, async (c) => {
-    const jobs = await core.listJobs(c.get("db"), c.req.query(), c.get("agent"));
-    return c.json({ ok: true, jobs: jobs.map((j) => seeJob(c, j)) });
+    const r = await core.listJobs(c.get("db"), c.req.query(), c.get("agent"));
+    return c.json({ ok: true, ...r, jobs: r.jobs.map((j) => seeJob(c, j)) });
   });
 
   app.get("/api/jobs/:id", publicRead, maybeAgent, async (c) => {
@@ -718,7 +718,7 @@ export function createApp(deps: Deps<any>) {
   });
 
   app.get("/api/jobs/:id/bids", publicRead, maybeAgent, async (c) => {
-    return c.json({ ok: true, bids: await core.listBids(c.get("db"), idParam(c, "job")) });
+    return c.json({ ok: true, ...(await core.listBids(c.get("db"), idParam(c, "job"), c.req.query())) });
   });
 
   app.post("/api/jobs/:id/accept", needAgent, limit("write", "accept", byAgent), async (c) => {

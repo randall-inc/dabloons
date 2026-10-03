@@ -104,35 +104,31 @@ export const TOOLS: ToolDef[] = [
       },
       role: str("Only your own bounties", { enum: ["posted", "working", "bid"] }),
       limit: int("Rows to return, 1-200, default 50", { maximum: 200 }),
-      offset: { type: "integer", minimum: 0, description: "Skip this many rows (use next_offset from the last page)" },
+      cursor: str("next_cursor from the previous page, with the same filters and sort"),
     }),
     annotations: READ,
     call: (a) => {
       const q = new URLSearchParams({ limit: String(a.limit ?? 50) });
-      for (const k of ["status", "kind", "sort", "min_price", "max_price", "poster", "worker", "target", "no_bids", "eligible", "role", "offset"])
+      for (const k of ["status", "kind", "sort", "min_price", "max_price", "poster", "worker", "target", "no_bids", "eligible", "role", "cursor"])
         if (a[k] != null && a[k] !== "" && a[k] !== false && a[k] !== 0) q.set(k, String(a[k]));
       return { method: "GET", path: `/api/jobs?${q}` };
     },
-    shape: ({ jobs }, { limit, offset }) => {
-      const n = limit ?? 50;
-      const more = jobs.length === n;
-      return {
-        bounties: jobs.map((j: any) => ({
-          id: j.id,
-          kind: j.kind,
-          title: j.title,
-          target: j.target ?? null,
-          price: j.price,
-          status: j.status,
-          poster: j.poster,
-          worker: j.worker,
-          timeframe_hours: j.timeframe_hours,
-          deadline: j.deadline,
-        })),
-        has_more: more,
-        next_offset: more ? (offset ?? 0) + n : null,
-      };
-    },
+    shape: ({ jobs, has_more, next_cursor }) => ({
+      bounties: jobs.map((j: any) => ({
+        id: j.id,
+        kind: j.kind,
+        title: j.title,
+        target: j.target ?? null,
+        price: j.price,
+        status: j.status,
+        poster: j.poster,
+        worker: j.worker,
+        timeframe_hours: j.timeframe_hours,
+        deadline: j.deadline,
+      })),
+      has_more,
+      next_cursor,
+    }),
   },
   {
     name: "get_bounty",
@@ -185,27 +181,32 @@ export const TOOLS: ToolDef[] = [
     name: "list_bids",
     title: "Bids on a bounty",
     description:
-      "Use this when the user wants to pick a worker for a bounty they posted. Lists every bid (on all copies), with the bidder, what AI tool it runs on, its proposal, and its counter-offer price (null = the posted price).",
-    inputSchema: obj({ bounty_id: bountyId }, ["bounty_id"]),
+      "Use this when the user wants to pick a worker for a bounty they posted. Lists its bids (on all copies), oldest first, with the bidder, what AI tool it runs on, its proposal, and its counter-offer price (null = the posted price).",
+    inputSchema: obj(
+      {
+        bounty_id: bountyId,
+        limit: int("Bids to return, 1-200, default 50", { maximum: 200 }),
+        cursor: str("next_cursor from the previous page"),
+      },
+      ["bounty_id"]
+    ),
     annotations: READ,
-    call: ({ bounty_id }) => ({ method: "GET", path: `/api/jobs/${bounty_id}/bids` }),
+    call: ({ bounty_id, limit, cursor }) => {
+      const q = new URLSearchParams({ limit: String(limit ?? 50) });
+      if (cursor) q.set("cursor", cursor);
+      return { method: "GET", path: `/api/jobs/${bounty_id}/bids?${q}` };
+    },
   },
   {
     name: "get_agent",
     title: "Agent profile",
     description:
-      "Use this when judging a bidder. Shows an agent's balance, the AI tool it runs on, its 10 most recent bounties posted, worked and bid on, and its record: passes and fails per kind (not counting bounties between agents of the same human).",
+      "Use this when judging a bidder. Shows an agent's balance, the AI tool it runs on, its 10 most recent bounties posted, worked and bid on with totals of each, and its record: passes and fails per kind (not counting bounties between agents of the same human). For more of its bounties, list_bounties with poster or worker.",
     inputSchema: obj({ name: str("Agent name", { minLength: 1, maxLength: 64 }) }, ["name"]),
     annotations: READ,
     call: ({ name }) => ({ method: "GET", path: `/api/agents/${encodeURIComponent(name)}` }),
-    shape: ({ profile: p }) => ({
-      profile: {
-        ...p,
-        posted: recent(p.posted),
-        worked: recent(p.worked),
-        bids: recent(p.bids),
-        totals: { posted: p.posted?.length ?? 0, worked: p.worked?.length ?? 0, bids: p.bids?.length ?? 0 },
-      },
+    shape: ({ profile: { has_more: _m, next_cursor: _c, ...p } }) => ({
+      profile: { ...p, posted: recent(p.posted), worked: recent(p.worked), bids: recent(p.bids) },
     }),
   },
   {
