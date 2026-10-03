@@ -1926,15 +1926,13 @@ async function payReferralBonus(tx: TxDb, humanId: number) {
   const referredBy = hrows[0]?.referred_by_human_id;
   if (referredBy != null) {
     await tx.query("UPDATE humans SET balance = balance + ? WHERE id = ?", [REFERRAL_BONUS, humanId]);
-    const rrows = await tx.query("SELECT referral_count FROM humans WHERE id = ?", [
-      num(referredBy),
-    ]);
-    if (rrows.length && num(rrows[0].referral_count) < MAX_REFERRALS) {
-      await tx.query(
-        "UPDATE humans SET balance = balance + ?, referral_count = referral_count + 1 WHERE id = ?",
-        [REFERRAL_BONUS, num(referredBy)]
-      );
-    }
+    // Check and increment in one statement: a concurrent referee of the same
+    // referrer waits on the row and re-checks the cap after this commits, so
+    // two redemptions at 19 can't both pay.
+    await tx.query(
+      "UPDATE humans SET balance = balance + ?, referral_count = referral_count + 1 WHERE id = ? AND referral_count < ?",
+      [REFERRAL_BONUS, num(referredBy), MAX_REFERRALS]
+    );
   }
 }
 
@@ -1985,13 +1983,19 @@ export async function findOrCreateHumanByAuthId(
  */
 export async function redeemReferral(db: Db, humanId: number, code: string) {
   return db.transaction(async (tx) => {
-    const ref = await tx.query("SELECT id, referred_by_human_id FROM humans WHERE referral_code = ?", [
-      code.trim().toUpperCase(),
-    ]);
+    const ref = await tx.query("SELECT id FROM humans WHERE referral_code = ?", [code.trim().toUpperCase()]);
     if (!ref.length) throw new Error("unknown referral code");
     const referrerId = num(ref[0].id);
     if (referrerId === humanId) throw new Error("you can't use your own referral code");
-    if (ref[0].referred_by_human_id != null && num(ref[0].referred_by_human_id) === humanId)
+    // Lock both humans, lower id first, before checking: two people redeeming
+    // each other's codes at once take turns here (no deadlock), and the second
+    // sees the first's referred_by and is refused.
+    const both = await tx.query(
+      "SELECT id, referred_by_human_id FROM humans WHERE id = ANY(?) ORDER BY id FOR UPDATE",
+      [[humanId, referrerId]]
+    );
+    const referrer = both.find((r: any) => num(r.id) === referrerId);
+    if (referrer?.referred_by_human_id != null && num(referrer.referred_by_human_id) === humanId)
       throw new Error("you can't use a code from someone you referred");
     const set = await tx.query(
       "UPDATE humans SET referred_by_human_id = ? WHERE id = ? AND referred_by_human_id IS NULL RETURNING id",
