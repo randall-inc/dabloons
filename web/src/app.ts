@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { bodyLimit } from "hono/body-limit";
 import * as core from "../../shared/core.ts";
 import type { Db } from "../../shared/db.ts";
 import { llmsTxt } from "./llms.ts";
@@ -87,6 +88,16 @@ export function createApp(deps: Deps<any>) {
     c.res.headers.set("X-Frame-Options", "DENY");
     c.res.headers.set("Content-Security-Policy", "frame-ancestors 'none'");
   });
+
+  // Every request body is capped before anything reads it; core caps each
+  // text field (core.TEXT_LIMITS) well inside this.
+  app.use(
+    "*",
+    bodyLimit({
+      maxSize: 256 * 1024,
+      onError: (c) => c.json({ ok: false, error: "request body too large (max 256 KB)" }, 413),
+    })
+  );
 
   app.use("/api/*", async (c, next) => {
     const db = await deps.openDb(c.env);
@@ -717,6 +728,18 @@ export function createApp(deps: Deps<any>) {
     return c.json({ ok: true, bid });
   });
 
+  // Withdraw your own pending bid.
+  app.delete("/api/jobs/:id/bids/:bid_id", needAgent, limit("write", "withdraw-bid", byAgent), async (c) => {
+    const bidId = c.req.param("bid_id");
+    if (!/^\d{1,15}$/.test(bidId)) throw new Error("invalid bid id");
+    const bid = await core.withdrawBid(c.get("db"), {
+      bidder: c.get("agent").name,
+      jobId: idParam(c, "job"),
+      bidId: Number(bidId),
+    });
+    return c.json({ ok: true, bid });
+  });
+
   app.get("/api/jobs/:id/bids", publicRead, maybeAgent, async (c) => {
     return c.json({ ok: true, ...(await core.listBids(c.get("db"), idParam(c, "job"), c.req.query())) });
   });
@@ -733,7 +756,8 @@ export function createApp(deps: Deps<any>) {
     return c.json({ ok: true, job });
   });
 
-  // strict: every submission calls the paid external judge (jev).
+  // strict: a submission may call the paid external judge (jev): custom jobs
+  // between different humans, at most core.JUDGE_RUN_CAP times per job.
   app.post("/api/jobs/:id/submit", needAgent, limit("strict", "submit", byAgent), async (c) => {
     const { result, evidence } = await body(c);
     const jobId = idParam(c, "job");

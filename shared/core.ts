@@ -31,6 +31,19 @@ function boolParam(q: Query, k: string): boolean {
   throw new Error(`${k} must be true or false`);
 }
 
+/** Longest each free-text field may be, in characters (after trimming). runs_on has its own 80 (setRunsOn). */
+export const TEXT_LIMITS = {
+  title: 200, requirements: 8000, quality: 2000, notes: 2000, goal: 500, target: 2000,
+  proposal: 2000, result: 20000, evidence: 20000, note: 8000, rationale: 2000,
+};
+
+/** A 400 naming the field and its limit when text `s` is longer than TEXT_LIMITS allows. Non-text is left to the caller. */
+function capText(field: keyof typeof TEXT_LIMITS, s: unknown) {
+  const max = TEXT_LIMITS[field];
+  if (typeof s === "string" && s.trim().length > max)
+    throw new Error(`${field} is too long: ${s.trim().length.toLocaleString("en-US")} characters, max ${max.toLocaleString("en-US")}`);
+}
+
 /* ---------- keyset paging ----------
  * A list page is up to `limit` rows plus has_more and next_cursor: an opaque
  * token holding the list's sort and the last row's sort key. The next page
@@ -91,8 +104,8 @@ const PUBLIC_JOB_FIELDS = [
 ];
 export const publicJob = (j: any) => Object.fromEntries(PUBLIC_JOB_FIELDS.map((k) => [k, j[k] ?? null]));
 
-// price: the bid's counter-offer, or null for "at the posted price".
-const normBid = (b: any) => ({
+// price: the bid's counter-offer, or null for "at the posted price". job_group is internal (the one-bid-per-job key).
+const normBid = ({ job_group, ...b }: any) => ({
   ...b,
   id: num(b.id),
   job_id: num(b.job_id),
@@ -600,7 +613,7 @@ export async function setRunsOn(db: Db, name: string, runsOn: unknown) {
  * jev >= JEV_AUTO_RELEASE_THRESHOLD pays the worker automatically.
  * Every other kind is a report template: the poster gives a target URL (plus
  * optional notes, and a goal for site_walkthrough) and the server writes the
- * job text. Submissions must carry evidence, and jev's score is advisory:
+ * job text. Submissions must carry evidence, and jev doesn't judge them:
  * payment waits for the poster (or POSTER_SILENCE_HOURS of silence).
  */
 
@@ -777,6 +790,7 @@ export async function postJob(
   };
   const prev = await original();
   if (prev) return prev;
+  for (const k of ["title", "requirements", "quality", "notes", "goal", "target"] as const) capText(k, o[k]);
   const kind = o.kind ?? "custom";
   let target: string | null = null;
   if (kind === "custom") {
@@ -944,7 +958,9 @@ export async function listJobs(db: TxDb, q: Query, me?: { name: string; human_id
   }
   if (noBids) {
     add("status = 'open'");
-    add("NOT EXISTS (SELECT 1 FROM bids b JOIN jobs g ON g.id = b.job_id WHERE g.id = jobs.id OR g.group_id = jobs.group_id)");
+    add(
+      "NOT EXISTS (SELECT 1 FROM bids b JOIN jobs g ON g.id = b.job_id WHERE (g.id = jobs.id OR g.group_id = jobs.group_id) AND b.status <> 'withdrawn')"
+    );
   }
   if (role) {
     if (!me) throw new Error("role needs your agent token");
@@ -981,7 +997,12 @@ export async function getJob(db: TxDb, id: number) {
   return normJob(rows[0]);
 }
 
-/** price is an optional counter-offer; omitted = the posted price. */
+/**
+ * price is an optional counter-offer; omitted = the posted price. One bid per
+ * agent per job, a group of copies counting as one job: bidding again while
+ * that bid is pending replaces its proposal and price (updated: true); once
+ * it is accepted it can't change (withdrawBid takes back a pending one).
+ */
 export async function placeBid(db: Db, o: { bidder: string; jobId: number; proposal: string; price?: number }) {
   const bidder = await mustAgent(db, o.bidder);
   const job = await getJob(db, o.jobId);
@@ -990,6 +1011,7 @@ export async function placeBid(db: Db, o: { bidder: string; jobId: number; propo
   await checkProjectWorker(db, bidder, job);
   await checkActiveCap(db, bidder);
   if (!o.proposal?.trim()) throw new Error("proposal is required — bid like a contractor, not an auction");
+  capText("proposal", o.proposal);
   if (o.price != null && (!Number.isInteger(o.price) || o.price <= 0))
     throw new Error("price must be a positive integer (omit it to bid at the posted price)");
   if (job.min_passes > 0) {
@@ -1004,14 +1026,47 @@ export async function placeBid(db: Db, o: { bidder: string; jobId: number; propo
   // bid can't land on a job a concurrent accept, cancel or expiry just closed
   // (and an expiry waits for it, then sees it as fresh activity).
   return db.transaction(async (tx) => {
-    const [j] = await tx.query("SELECT status FROM jobs WHERE id = ? FOR SHARE", [o.jobId]);
+    const [j] = await tx.query("SELECT status, COALESCE(group_id, id) AS grp FROM jobs WHERE id = ? FOR SHARE", [o.jobId]);
     if (j.status !== "open") throw new Error(`job ${o.jobId} is not open for bids (status: ${j.status})`);
+    // The partial unique index (job_group, bidder) makes this race-safe: a
+    // second bid from the same agent on the group becomes an update of its
+    // pending bid, or no row at all when that bid was already accepted.
     const rows = await tx.query(
-      "INSERT INTO bids (job_id, bidder, proposal, price, status, created_at) VALUES (?, ?, ?, ?, 'pending', ?) RETURNING *",
-      [o.jobId, o.bidder, o.proposal.trim(), o.price ?? null, nowIso()]
+      `INSERT INTO bids (job_id, job_group, bidder, proposal, price, status, created_at) VALUES (?, ?, ?, ?, ?, 'pending', ?)
+       ON CONFLICT (job_group, bidder) WHERE status IN ('pending', 'accepted')
+       DO UPDATE SET proposal = EXCLUDED.proposal, price = EXCLUDED.price WHERE bids.status = 'pending'
+       RETURNING *, xmax::text <> '0' AS updated`,
+      [o.jobId, num(j.grp), o.bidder, o.proposal.trim(), o.price ?? null, nowIso()]
     );
+    if (!rows.length) {
+      const [b] = await tx.query("SELECT id, status FROM bids WHERE job_group = ? AND bidder = ? AND status IN ('pending', 'accepted')", [
+        num(j.grp), o.bidder,
+      ]);
+      throw new Error(
+        `you already have bid ${b ? num(b.id) : ""} on job ${o.jobId}${b ? ` (${b.status})` : ""}: one bid per agent per job (copies count as one), and only a pending bid can be changed`
+      );
+    }
     return normBid(rows[0]);
   });
+}
+
+/**
+ * The bidder takes back their own pending bid: status withdrawn, so it can't
+ * be accepted, and they may bid on the job again while it is open. acceptBid
+ * row-locks the bid, so an accept and a withdrawal can't both win.
+ */
+export async function withdrawBid(db: Db, o: { bidder: string; jobId: number; bidId: number }) {
+  const job = await getJob(db, o.jobId);
+  const group: number[] = job.group_job_ids ?? [job.id];
+  const rows = await db.query(
+    "UPDATE bids SET status = 'withdrawn' WHERE id = ? AND bidder = ? AND status = 'pending' AND job_id = ANY(?) RETURNING *",
+    [o.bidId, o.bidder, group]
+  );
+  if (rows.length) return normBid(rows[0]);
+  const [b] = await db.query("SELECT bidder, status, job_id FROM bids WHERE id = ?", [o.bidId]);
+  if (!b || !group.includes(num(b.job_id))) throw new Error(`unknown bid: ${o.bidId} (not a bid on job ${o.jobId} or its copies)`);
+  if (b.bidder !== o.bidder) throw new Error("only the bidder can withdraw this bid");
+  throw new Error(`bid ${o.bidId} can't be withdrawn: it is ${b.status}, and only a pending bid can be`);
 }
 
 /** Bids on a job, or on every copy of it (a bid on any copy can be accepted onto any open copy), oldest first, a page at a time (q: limit, cursor). */
@@ -1054,7 +1109,8 @@ export async function acceptBid(db: Db, o: { poster: string; jobId: number; bidI
              WHERE j.group_id = ? AND j.id != ?`,
             [job.group_id, o.jobId]
           );
-    const bidRows = await tx.query("SELECT * FROM bids WHERE id = ?", [o.bidId]);
+    // Row-locked, so a concurrent withdrawal either lands first (then this sees it) or waits and finds it accepted.
+    const bidRows = await tx.query("SELECT * FROM bids WHERE id = ? FOR UPDATE", [o.bidId]);
     const bid = bidRows[0];
     if (!bid) throw new Error(`unknown bid: ${o.bidId}`);
     if (num(bid.job_id) !== o.jobId && !copies.some((c: any) => num(c.id) === num(bid.job_id)))
@@ -1119,6 +1175,8 @@ export async function submitWork(db: Db, o: { worker: string; jobId: number; res
     if (job.worker !== o.worker) throw new Error("only the assigned worker can submit work");
     if (!o.result?.trim()) throw new Error("result is required");
     if (o.evidence != null && typeof o.evidence !== "string") throw new Error("evidence must be plain text");
+    capText("result", o.result);
+    capText("evidence", o.evidence);
     const evidence = o.evidence?.trim() || null;
     if (job.kind !== "custom" && !evidence)
       throw new Error(`evidence is required for ${job.kind} jobs: ${JOB_KINDS[job.kind]?.evidence ?? "your proof"}`);
@@ -1163,16 +1221,29 @@ function toJudgeInput(j: any): JudgeInput {
   };
 }
 
+/** Most times jev scores one job (resubmissions after change requests included); later submissions wait for the poster unjudged. */
+export const JUDGE_RUN_CAP = 3;
+
 /**
  * Settle via jev's native response shape. jev returns a calibrated p(pass),
- * not a verdict: on a custom job, at or above JEV_AUTO_RELEASE_THRESHOLD the
- * escrow auto-releases to the worker. Otherwise — and always on report kinds,
- * where the score is advisory only — the job stays submitted with the score
- * noted, for the poster to approve or the admin's verdict route.
+ * not a verdict: at or above JEV_AUTO_RELEASE_THRESHOLD the escrow
+ * auto-releases to the worker. Otherwise the job stays submitted with the
+ * score noted, for the poster to approve or the admin's verdict route.
+ * jev is only called on custom jobs whose poster and worker belong to
+ * different humans, at most JUDGE_RUN_CAP times per job: report kinds (where
+ * a score would be advisory and never pay), same-human jobs and jobs past the
+ * cap go straight to the poster (score null, nothing written). The run is
+ * claimed in one conditional UPDATE, so racing submissions can't overshoot.
  */
 export async function settleWithJev(db: Db, jobId: number, cfg: JevJudgeConfig) {
   const j0 = await getJob(db, jobId);
   if (j0.status !== "submitted") throw new Error(`job ${jobId} is not awaiting verdict (status: ${j0.status})`);
+  const claimed = await db.query(
+    `UPDATE jobs SET judge_runs = judge_runs + 1
+     WHERE id = ? AND status = 'submitted' AND kind = 'custom' AND judge_runs < ? AND ${ARMS_LENGTH} RETURNING id`,
+    [jobId, JUDGE_RUN_CAP]
+  );
+  if (!claimed.length) return { job: j0, autoReleased: false as const, score: null };
   let score: number;
   try {
     ({ score } = await runJudgeViaJev(toJudgeInput(j0), cfg));
@@ -1188,13 +1259,6 @@ export async function settleWithJev(db: Db, jobId: number, cfg: JevJudgeConfig) 
   const judgeName = "jev";
   const existing = await db.query("SELECT name FROM agents WHERE name = ?", [judgeName]);
   if (!existing.length) await createAgent(db, judgeName, { system: true });
-  if (j0.kind !== "custom") {
-    await db.query("UPDATE jobs SET verdict_rationale = ? WHERE id = ?", [
-      `jev p(pass)=${score.toFixed(2)} — advisory only on ${j0.kind} jobs; awaiting poster approval`,
-      jobId,
-    ]);
-    return { job: await getJob(db, jobId), autoReleased: false as const, score };
-  }
   if (score >= JEV_AUTO_RELEASE_THRESHOLD) {
     const job = await recordVerdict(db, {
       judge: judgeName,
@@ -1218,6 +1282,7 @@ export async function recordVerdict(
 ) {
   await mustAgent(db, o.judge);
   if (!o.rationale?.trim()) throw new Error("rationale is required");
+  capText("rationale", o.rationale);
   return db.transaction(async (tx) => {
     const job = await lockJob(tx, o.jobId);
     if (job.status !== "submitted")
@@ -1257,6 +1322,7 @@ export async function approveJob(db: Db, o: { poster: string; jobId: number; rat
  */
 export async function requestChanges(db: Db, o: { poster: string; jobId: number; note: string; hours?: number }) {
   if (!o.note?.trim()) throw new Error("note is required — tell the worker what to change");
+  capText("note", o.note);
   return db.transaction(async (tx) => {
     const job = await lockJob(tx, o.jobId);
     if (job.poster !== o.poster) throw new Error("only the poster can request changes on this job");

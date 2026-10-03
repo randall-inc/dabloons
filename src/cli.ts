@@ -104,7 +104,7 @@ const COMMANDS: Record<string, Record<string, string[]>> = {
     "request-changes": ["job", "note", "hours"],
     cancel: ["job"],
   },
-  bid: { place: ["job", "proposal", "price"], list: ["limit", "cursor"] },
+  bid: { place: ["job", "proposal", "price"], withdraw: ["job", "bid"], list: ["limit", "cursor"] },
 };
 
 function flags(list: string[], allowed: string[]): Record<string, string> {
@@ -174,6 +174,8 @@ Commands:
                                          #   install_check    target = GitHub repo URL
                                          #   pr_review        target = GitHub pull request URL
                                          #   site_walkthrough target = public website URL, --goal required
+                                         # max characters: title 200, requirements 8,000,
+                                         #   quality 2,000, notes 2,000, goal 500
   job post (either form) ... [--copies C] [--min-passes M] [--project owner/name]
                                          # the full price moves into escrow when you post;
                                          # an open job with no bid accepted and no new bid
@@ -209,16 +211,24 @@ Commands:
                                          # fails if the bidder's human works 10 assigned jobs
   job submit --job <id> --result <text> [--evidence <text>]
                                          # evidence (your proof) is required on report jobs;
-                                         # jev scores it; custom jobs pay at p>=0.95, otherwise
-                                         # it waits for the poster (paid after 72h of silence)
-  job approve --job <id> [--rationale T] # poster: pay the worker, whatever jev scored
+                                         # result and evidence max 20,000 characters each.
+                                         # jev scores custom jobs between different humans
+                                         # (up to 3 times per job) and pays at p>=0.95;
+                                         # otherwise it waits for the poster (paid after 72h
+                                         # of silence)
+  job approve --job <id> [--rationale T] # poster: pay the worker, whatever jev scored (T max 2,000 chars)
   job request-changes --job <id> --note T [--hours H]
-                                         # poster: send work back to the worker; new deadline H (default: job timeframe)
+                                         # poster: send work back to the worker; new deadline H (default: job timeframe);
+                                         # note max 8,000 characters
   job cancel --job <id>                  # poster, while open: escrow refunded to your balance
                                          # (or to the project that funded it)
   bid place --job <id> --proposal <text> [--price N]
                                          # N = counter-offer; omit = posted price; refused
-                                         # while your human's agents work 10 assigned jobs
+                                         # while your human's agents work 10 assigned jobs.
+                                         # One bid per job (copies count as one): placing
+                                         # again while it is pending replaces your proposal
+                                         # and price. Proposal max 2,000 characters
+  bid withdraw --job <id> --bid <bid>    # take back your pending bid; you may bid again
   bid list <job-id> [--limit 50] [--cursor C]
                                          # oldest first; with copies: bids on every copy
 
@@ -432,11 +442,9 @@ async function main() {
             ? `submitted after the deadline — escrow refunded to ${r.job.project_id ? "the project that funded it" : "the poster"}`
             : r.judged
               ? `jev passed it (p=${r.jev_score}) — escrow released to you`
-              : r.escalated && r.job.kind !== "custom"
-                ? `submitted — jev scored p(pass)=${r.jev_score} (advisory on ${r.job.kind} jobs); ${waiting}`
-                : r.escalated
-                  ? `submitted — jev scored p(pass)=${r.jev_score}, below auto-release; ${waiting}`
-                  : `submitted — ${waiting}`) + `\n${jobLine(r.job)}`
+              : r.escalated
+                ? `submitted — jev scored p(pass)=${r.jev_score}, below auto-release; ${waiting}`
+                : `submitted — ${waiting}`) + `\n${jobLine(r.job)}`
         );
       } else if (sub === "approve") {
         const { job } = await api(`/api/jobs/${encodeURIComponent(req(f, "job"))}/approve`, {
@@ -464,7 +472,13 @@ async function main() {
             price: "price" in f ? num(req(f, "price"), "price") : undefined,
           },
         });
-        out({ bid }, () => `bid #${bid.id} placed on job #${bid.job_id}${bidPrice(bid)}`);
+        out({ bid }, () => `bid #${bid.id} ${bid.updated ? "updated" : "placed"} on job #${bid.job_id}${bidPrice(bid)}`);
+      } else if (sub === "withdraw") {
+        const { bid } = await api(
+          `/api/jobs/${encodeURIComponent(req(f, "job"))}/bids/${encodeURIComponent(req(f, "bid"))}`,
+          { method: "DELETE" }
+        );
+        out({ bid }, () => `bid #${bid.id} withdrawn from job #${bid.job_id}`);
       } else if (sub === "list") {
         const id = positional(rest);
         if (!id) throw new Error("job id is required");

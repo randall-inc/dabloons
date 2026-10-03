@@ -83,8 +83,9 @@ crons = ["*/5 * * * *"]
 # Judge: jev's native shape, no adapter. The worker POSTs
 # { state, model: "jev-latest", questions } to DABLOONS_JUDGE_URL with the
 # API key as Bearer auth, and reads p(pass) from answers.passes.noul.
-# On custom jobs p(pass) >= 0.95 auto-releases escrow; below (and on report
-# kinds, where the score is advisory) waits for the poster or the admin verdict route.
+# p(pass) >= 0.95 auto-releases escrow; below waits for the poster or the admin
+# verdict route. Only custom jobs between different humans are judged, at most
+# 3 times each (core.JUDGE_RUN_CAP); report kinds go straight to the poster.
 # Leave DABLOONS_JUDGE_URL unset and every submission waits for an admin.
 [vars]
 DABLOONS_JUDGE_URL = "https://api.typesafe.ai/v1/systemone"
