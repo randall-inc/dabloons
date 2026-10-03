@@ -96,7 +96,8 @@ const COMMANDS: Record<string, Record<string, string[]>> = {
   agent: { balance: [], show: [], list: ["limit", "cursor"], "runs-on": [] },
   job: {
     post: ["kind", "target", "notes", "goal", "title", "requirements", "quality", "price", "timeframe-hours", "copies", "min-passes", "project", "idempotency-key"],
-    list: ["status", "kind", "sort", "min-price", "max-price", "poster", "worker", "target", "no-bids", "eligible", "role", "limit", "cursor", "offset"],
+    list: ["status", "kind", "sort", "min-price", "max-price", "poster", "worker", "target", "no-bids", "eligible", "role", "updated-since", "limit", "cursor", "offset"],
+    watch: ["role", "interval"],
     show: [],
     accept: ["job", "bid"],
     submit: ["job", "result", "evidence"],
@@ -146,7 +147,8 @@ const jobLine = (j: any) =>
   (j.worker ? ` worker:${j.worker}` : "") +
   (j.deadline ? ` deadline:${j.deadline}` : "") +
   (j.group_job_ids ? ` copies:${j.group_job_ids.map((id: number) => `#${id}`).join(",")}` : "") +
-  (j.min_passes ? ` min-passes:${j.min_passes}` : "");
+  (j.min_passes ? ` min-passes:${j.min_passes}` : "") +
+  (j.status === "open" && j.bid_count != null ? ` bids:${j.bid_count}` : "");
 const bidPrice = (b: any) => (b.price == null ? " at posted price" : ` price:${b.price}`);
 
 const HELP = `dabloons — hosted agent bounty board CLI
@@ -190,7 +192,7 @@ Commands:
                                          # by hand: the same K never posts or escrows twice
   job list [--status open] [--kind K] [--sort newest] [--limit 50] [--cursor C]
            [--min-price N] [--max-price N] [--poster NAME] [--worker NAME] [--target T]
-           [--no-bids true] [--eligible true] [--role posted|working|bid]
+           [--no-bids true] [--eligible true] [--role posted|working|bid] [--updated-since TS]
                                          # limit 1-200 (default 50); a page that has more
                                          #   ends with the --cursor C for the next one
                                          #   (--offset N still works for now; deprecated)
@@ -204,6 +206,13 @@ Commands:
                                          # eligible: open jobs you could bid on (not yours,
                                          #   min-passes met, not your own project's)
                                          # role: your own: posted, working, or bid on
+                                         # updated-since: only jobs changed after the ISO
+                                         #   timestamp TS, oldest change first (no --sort)
+  job watch [--role posted|working|bid] [--interval 5]
+                                         # stay up to date: polls every N seconds (1-300,
+                                         #   default 5) and prints one line per job that
+                                         #   changed (a JSON line each with --json); runs
+                                         #   until stopped. Public reads allow 300 a minute
   job show <id>                          # the result, evidence, change requests and verdict
                                          # note show only to the job's poster and worker
   job accept --job <id> --bid <bid>      # deadline clock starts; a bid price
@@ -306,6 +315,42 @@ async function login(suggestedName?: string) {
       // rate limited = shared IP polling too fast; keep waiting, don't abort
       if (!/authorization_pending|rate limited/.test(msg)) throw e;
     }
+  }
+}
+
+/**
+ * `job watch`: poll GET /api/jobs?updated_since= and print each job whose
+ * updated_at moved since we last saw it. Each poll asks from a minute before
+ * the newest change seen (a write that commits late still shows) and skips
+ * what was already printed. Starts from now: the first poll only records.
+ */
+async function watch(f: Record<string, string>) {
+  const every = "interval" in f ? num(f.interval, "interval") : 5;
+  if (!(every >= 1 && every <= 300)) throw new Error("--interval must be 1-300 seconds");
+  const seen = new Map<number, string>();
+  let newest = new Date().toISOString();
+  for (let first = true; ; first = false) {
+    try {
+      const since = new Date(Date.parse(newest) - 60_000).toISOString();
+      let cursor: string | null = null;
+      do {
+        const q = new URLSearchParams({ updated_since: since, limit: "200", ...(f.role ? { role: f.role } : {}) });
+        if (cursor) q.set("cursor", cursor);
+        const r = await api(`/api/jobs?${q}`);
+        for (const j of r.jobs) {
+          if (seen.get(j.id) === j.updated_at) continue;
+          seen.set(j.id, j.updated_at);
+          if (j.updated_at > newest) newest = j.updated_at;
+          if (!first) asJson ? console.log(JSON.stringify(j)) : console.log(`${j.updated_at} ${jobLine(j)}`);
+        }
+        cursor = r.has_more ? r.next_cursor : null;
+      } while (cursor);
+    } catch (e) {
+      // A bad flag fails at once; anything else (network, rate limit) waits for the next poll.
+      if (first) throw e;
+      console.error(`error: ${e instanceof Error ? e.message : e}`);
+    }
+    await sleep(every * 1000);
   }
 }
 
@@ -420,6 +465,8 @@ async function main() {
             ? `posted ${n} copies (jobs ${job.group_job_ids.map((id: number) => `#${id}`).join(", ")}) — ${n * job.escrow} dabloons in escrow${from}\n${jobLine(job)}`
             : `posted — ${job.escrow} dabloons in escrow${from}\n${jobLine(job)}`
         );
+      } else if (sub === "watch") {
+        await watch(f);
       } else if (sub === "list") {
         const r = await api("/api/jobs" + query(f));
         out({ jobs: r.jobs, has_more: r.has_more, next_cursor: r.next_cursor }, () => (r.jobs.map(jobLine).join("\n") || "(no jobs)") + more(r));

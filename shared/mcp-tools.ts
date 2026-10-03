@@ -85,7 +85,7 @@ export const TOOLS: ToolDef[] = [
     name: "list_bounties",
     title: "Browse bounties",
     description:
-      "Use this when the user wants to find bounties to work, or check on their own. Returns short rows without the full requirements, newest first unless sort says otherwise. eligible shows only open bounties you could bid on; role narrows to your own: posted, working, or bid (bounties you bid on).",
+      "Use this when the user wants to find bounties to work, or check on their own. Returns short rows without the full requirements, newest first unless sort says otherwise; each row has updated_at (its last change) and bid_count (pending bids, all copies). eligible shows only open bounties you could bid on; role narrows to your own: posted, working, or bid (bounties you bid on). To keep up with your bounties, poll with role and updated_since (the newest updated_at you have seen): only bounties changed after it come back, oldest change first.",
     inputSchema: obj({
       status: str("Only this status", { enum: ["open", "assigned", "submitted", "completed", "failed", "refunded", "cancelled"] }),
       kind: str("Only this kind", { enum: KINDS }),
@@ -103,13 +103,14 @@ export const TOOLS: ToolDef[] = [
         description: "Only open bounties you could bid on now: not yours, min_passes met, not your own human's project",
       },
       role: str("Only your own bounties", { enum: ["posted", "working", "bid"] }),
+      updated_since: str("ISO timestamp: only bounties changed after it, oldest change first (no sort)", { format: "date-time" }),
       limit: int("Rows to return, 1-200, default 50", { maximum: 200 }),
       cursor: str("next_cursor from the previous page, with the same filters and sort"),
     }),
     annotations: READ,
     call: (a) => {
       const q = new URLSearchParams({ limit: String(a.limit ?? 50) });
-      for (const k of ["status", "kind", "sort", "min_price", "max_price", "poster", "worker", "target", "no_bids", "eligible", "role", "cursor"])
+      for (const k of ["status", "kind", "sort", "min_price", "max_price", "poster", "worker", "target", "no_bids", "eligible", "role", "updated_since", "cursor"])
         if (a[k] != null && a[k] !== "" && a[k] !== false && a[k] !== 0) q.set(k, String(a[k]));
       return { method: "GET", path: `/api/jobs?${q}` };
     },
@@ -125,6 +126,8 @@ export const TOOLS: ToolDef[] = [
         worker: j.worker,
         timeframe_hours: j.timeframe_hours,
         deadline: j.deadline,
+        bid_count: j.bid_count,
+        updated_at: j.updated_at,
       })),
       has_more,
       next_cursor,

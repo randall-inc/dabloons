@@ -90,6 +90,8 @@ function normJob(j: any) {
     deadline: iso(j.deadline),
     submitted_at: iso(j.submitted_at),
     created_at: iso(j.created_at),
+    updated_at: iso(j.updated_at),
+    bid_count: j.bid_count == null ? undefined : num(j.bid_count),
   };
 }
 
@@ -100,7 +102,7 @@ function normJob(j: any) {
 const PUBLIC_JOB_FIELDS = [
   "id", "poster", "kind", "target", "title", "requirements", "quality", "price", "timeframe_hours", "status",
   "escrow", "accepted_bid", "worker", "deadline", "submitted_at", "verdict", "verdict_by", "created_at",
-  "group_id", "group_job_ids", "min_passes",
+  "group_id", "group_job_ids", "min_passes", "updated_at", "bid_count",
 ];
 export const publicJob = (j: any) => Object.fromEntries(PUBLIC_JOB_FIELDS.map((k) => [k, j[k] ?? null]));
 
@@ -112,9 +114,13 @@ const normBid = ({ job_group, ...b }: any) => ({
   price: b.price == null ? null : num(b.price),
 });
 
-/** Job columns for show/list: every column plus the ids of all copies in its group. */
+/** Pending bids on the job's whole group of copies (bids.job_group; the one-bid-per-agent index covers it). */
+const BID_COUNT =
+  "(SELECT COUNT(*) FROM bids b WHERE b.job_group = COALESCE(jobs.group_id, jobs.id) AND b.status = 'pending') AS bid_count";
+
+/** Job columns for show/list: every column plus the ids of all copies in its group and the pending bid count. */
 const JOB_COLS =
-  "*, (SELECT array_agg(g.id ORDER BY g.id) FROM jobs g WHERE g.group_id = jobs.group_id) AS group_job_ids";
+  `*, (SELECT array_agg(g.id ORDER BY g.id) FROM jobs g WHERE g.group_id = jobs.group_id) AS group_job_ids, ${BID_COUNT}`;
 
 function normAgent(a: any) {
   // purchased_balance stays internal: public profiles show one balance total.
@@ -941,8 +947,8 @@ const JOB_SORTS: Record<string, [string, "ASC" | "DESC"]> = {
 /** List rows: every column but the large private result and evidence (job show has those). */
 const LIST_COLS =
   "id, poster, kind, target, title, requirements, quality, price, timeframe_hours, status, escrow, accepted_bid, worker, " +
-  "deadline, submitted_at, verdict, verdict_by, verdict_rationale, feedback, project_id, group_id, min_passes, created_at, " +
-  "(SELECT array_agg(g.id ORDER BY g.id) FROM jobs g WHERE g.group_id = jobs.group_id) AS group_job_ids";
+  "deadline, submitted_at, verdict, verdict_by, verdict_rationale, feedback, project_id, group_id, min_passes, created_at, updated_at, " +
+  `(SELECT array_agg(g.id ORDER BY g.id) FROM jobs g WHERE g.group_id = jobs.group_id) AS group_job_ids, ${BID_COUNT}`;
 
 /** s with LIKE's wildcards (and its escape character) escaped. */
 const likeEscape = (s: string) => s.replace(/[\\%_]/g, "\\$&");
@@ -956,17 +962,28 @@ const likeEscape = (s: string) => s.replace(/[\\%_]/g, "\\$&");
  * working, or bid — jobs it has a bid on) and eligible (open jobs it could
  * bid on: not its own, min_passes met as placeBid counts them, not a project
  * bounty it is barred from, and none at all while it is at the active-job cap).
+ * updated_since (an ISO timestamp) lists only jobs changed after it, oldest
+ * change first (updated_at, then id) and takes no sort: what a poller or
+ * `dabloons job watch` asks for, combinable with every filter (role above all).
  * Paged by cursor (limit, cursor -> has_more, next_cursor) in every sort.
  */
 export async function listJobs(db: TxDb, q: Query, me?: { name: string; human_id: number | null }) {
   const limit = LIMIT(q);
   // offset: deprecated, kept for one release because CLI 0.6.4 sends it; cursors are the way.
   const offset = intParam(q, "offset", 0, Number.MAX_SAFE_INTEGER, ", 0 or more") ?? 0;
-  const sort = q.sort || "newest";
-  if (!Object.hasOwn(JOB_SORTS, sort)) throw new Error(`sort must be one of: ${Object.keys(JOB_SORTS).join(", ")} (default newest)`);
-  const [key, dir] = JOB_SORTS[sort];
+  let since: string | null = null;
+  if (q.updated_since) {
+    const t = Date.parse(q.updated_since);
+    if (isNaN(t)) throw new Error("updated_since must be an ISO timestamp, e.g. 2026-10-02T12:00:00.000Z");
+    if (q.sort) throw new Error("updated_since lists jobs oldest change first and takes no sort: drop sort");
+    since = new Date(t).toISOString();
+  }
+  const sort = since ? "updated" : q.sort || "newest";
+  if (!since && !Object.hasOwn(JOB_SORTS, sort)) throw new Error(`sort must be one of: ${Object.keys(JOB_SORTS).join(", ")} (default newest)`);
+  const [key, dir] = since ? ["updated_at", "ASC"] : JOB_SORTS[sort];
+  const isTime = (k: unknown) => typeof k === "string" && !isNaN(Date.parse(k));
   const after = fromCursor(q.cursor, sort, (k, id) =>
-    isId(id) && (sort === "deadline" ? k === "infinity" || (typeof k === "string" && !isNaN(Date.parse(k))) : isId(k))
+    isId(id) && (sort === "deadline" ? k === "infinity" || isTime(k) : sort === "updated" ? isTime(k) : isId(k))
   );
   if (after && offset) throw new Error("use cursor or offset, not both (offset is deprecated)");
   const { status, kind, role } = q;
@@ -984,6 +1001,7 @@ export async function listJobs(db: TxDb, q: Query, me?: { name: string; human_id
   const params: unknown[] = [];
   const add = (sql: string, ...p: unknown[]) => (where.push(sql), params.push(...p));
   if (status) add("status = ?", status);
+  if (since) add("updated_at > ?", since);
   if (kind) add("kind = ?", kind);
   if (minPrice != null) add("price >= ?", minPrice);
   if (maxPrice != null) add("price <= ?", maxPrice);
@@ -1032,7 +1050,7 @@ export async function listJobs(db: TxDb, q: Query, me?: { name: string; human_id
      ORDER BY ${key === "id" ? "" : `${key} ${dir}, `}id ${dir} LIMIT ? OFFSET ?`,
     [...params, limit + 1, offset]
   );
-  const sortKey = { id: "id", price: "price" }[key] ?? "deadline";
+  const sortKey = ({ id: "id", price: "price", updated_at: "updated_at" } as Record<string, string>)[key] ?? "deadline";
   const { items, ...rest } = page(rows.map(normJob), limit, sort, (j) => [j[sortKey] ?? "infinity", j.id]);
   return { jobs: items, ...rest };
 }
@@ -1068,11 +1086,15 @@ export async function placeBid(db: Db, o: { bidder: string; jobId: number; propo
       );
   }
 
-  // Insert under a share lock on the job, re-checking it is still open, so a
-  // bid can't land on a job a concurrent accept, cancel or expiry just closed
-  // (and an expiry waits for it, then sees it as fresh activity).
+  // Insert under the group's row locks (every copy, in id order, as acceptBid
+  // takes them), re-checking the job is still open, so a bid can't land on a
+  // job a concurrent accept, cancel or expiry just closed (and an expiry waits
+  // for it, then sees it as fresh activity). The bid trigger (migration 017)
+  // bumps every copy's updated_at, so those rows must be locked in this order
+  // first or a bid and an accept could deadlock.
   return db.transaction(async (tx) => {
-    const [j] = await tx.query("SELECT status, COALESCE(group_id, id) AS grp FROM jobs WHERE id = ? FOR SHARE", [o.jobId]);
+    await lockGroup(tx, o.jobId);
+    const [j] = await tx.query("SELECT status, COALESCE(group_id, id) AS grp FROM jobs WHERE id = ?", [o.jobId]);
     if (j.status !== "open") throw new Error(`job ${o.jobId} is not open for bids (status: ${j.status})`);
     // The partial unique index (job_group, bidder) makes this race-safe: a
     // second bid from the same agent on the group becomes an update of its
@@ -1104,15 +1126,19 @@ export async function placeBid(db: Db, o: { bidder: string; jobId: number; propo
 export async function withdrawBid(db: Db, o: { bidder: string; jobId: number; bidId: number }) {
   const job = await getJob(db, o.jobId);
   const group: number[] = job.group_job_ids ?? [job.id];
-  const rows = await db.query(
-    "UPDATE bids SET status = 'withdrawn' WHERE id = ? AND bidder = ? AND status = 'pending' AND job_id = ANY(?) RETURNING *",
-    [o.bidId, o.bidder, group]
-  );
-  if (rows.length) return normBid(rows[0]);
-  const [b] = await db.query("SELECT bidder, status, job_id FROM bids WHERE id = ?", [o.bidId]);
-  if (!b || !group.includes(num(b.job_id))) throw new Error(`unknown bid: ${o.bidId} (not a bid on job ${o.jobId} or its copies)`);
-  if (b.bidder !== o.bidder) throw new Error("only the bidder can withdraw this bid");
-  throw new Error(`bid ${o.bidId} can't be withdrawn: it is ${b.status}, and only a pending bid can be`);
+  return db.transaction(async (tx) => {
+    // The group's rows first, in acceptBid's order: the bid trigger updates them.
+    await lockGroup(tx, o.jobId);
+    const rows = await tx.query(
+      "UPDATE bids SET status = 'withdrawn' WHERE id = ? AND bidder = ? AND status = 'pending' AND job_id = ANY(?) RETURNING *",
+      [o.bidId, o.bidder, group]
+    );
+    if (rows.length) return normBid(rows[0]);
+    const [b] = await tx.query("SELECT bidder, status, job_id FROM bids WHERE id = ?", [o.bidId]);
+    if (!b || !group.includes(num(b.job_id))) throw new Error(`unknown bid: ${o.bidId} (not a bid on job ${o.jobId} or its copies)`);
+    if (b.bidder !== o.bidder) throw new Error("only the bidder can withdraw this bid");
+    throw new Error(`bid ${o.bidId} can't be withdrawn: it is ${b.status}, and only a pending bid can be`);
+  });
 }
 
 /** Bids on a job, or on every copy of it (a bid on any copy can be accepted onto any open copy), oldest first, a page at a time (q: limit, cursor). */
@@ -1443,7 +1469,7 @@ export async function sweepIdleOpenJobs(db: Db, batch = 500) {
       const done = await db.transaction(async (tx) => {
         await lockGroup(tx, num(r.id));
         const job = await lockJob(tx, num(r.id));
-        // Re-check under the locks: an accept, cancel or new bid (placeBid holds the job's share lock) may have landed since the scan.
+        // Re-check under the locks: an accept, cancel or new bid (placeBid locks the group too) may have landed since the scan.
         if (job.status !== "open") return false;
         if (!(await tx.query(`SELECT 1 FROM jobs WHERE id = ? AND ${LAST_ACTIVITY} < ?`, [job.id, cutoff()])).length) return false;
         await closeOpenJob(tx, job, "status = 'refunded', verdict = 'fail', verdict_by = 'system', verdict_rationale = ?", [

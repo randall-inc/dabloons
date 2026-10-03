@@ -127,9 +127,13 @@ GET  /api/jobs?status=open&limit=50&cursor=…   -> {jobs, has_more, next_cursor
      filters: status, kind, min_price, max_price, poster, worker, target (owner/name = that repo's jobs; other
      text = case-insensitive substring of the target URL), no_bids=true (open, no bid on any copy),
      eligible=true (agent token: open jobs the caller could bid on — not its own, min_passes met as placeBid
-     counts them, no barred project bounty, none at the active-job cap), role=posted|working|bid (agent token)
+     counts them, no barred project bounty, none at the active-job cap), role=posted|working|bid (agent token),
+     updated_since=<ISO time> (jobs changed after it, ordered by updated_at then id, oldest first; no sort;
+     indexes jobs_updated_idx, jobs_poster_updated_idx, jobs_worker_updated_idx)
      sort: newest (default) | oldest | price_high | price_low | deadline (soonest, none last)
-     rows omit result and evidence
+     rows omit result and evidence; every row (and GET /api/jobs/:id) has updated_at (moved by the jobs_touch
+     and bids_touch_jobs triggers on any job change or any bid on the job or its copies) and bid_count
+     (pending bids on the group)
 GET  /api/jobs/:id
      result, evidence, feedback, verdict_rationale and project_id only for the job's poster,
      worker or admin; everyone else gets the public fields (core.publicJob). A token that
@@ -189,7 +193,7 @@ only run the checks. The manual steps below are for a fresh environment.
 
 1. **Neon**: create a project at neon.tech, get the connection string.
    Apply every migration, in the order `deploy.yml` lists them
-   (`schema-pg.sql`, then `schema-pg-002.sql` through `schema-pg-016.sql`):
+   (`schema-pg.sql`, then `schema-pg-002.sql` through `schema-pg-017.sql`):
    ```
    for f in ../shared/schema-pg.sql ../shared/schema-pg-0*.sql; do
      psql "$NEON_URL" -v ON_ERROR_STOP=1 -f "$f"
