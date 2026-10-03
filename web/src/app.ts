@@ -840,18 +840,31 @@ export function createApp(deps: Deps<any>) {
     );
   });
 
-  // Token endpoint: authorization_code (+ PKCE) and refresh_token. Not rate
-  // limited: hosted clients share a few IPs, and a guess is one hash lookup.
-  app.post("/oauth/token", async (c) => {
+  // Token endpoint: authorization_code (+ PKCE) and refresh_token. Rate
+  // limited per client IP on the read tier (300 a minute): hosted clients
+  // share a few IPs, so the budget is generous, and a guess is one hash lookup.
+  app.post("/oauth/token", limit("read", "oauth-token", byIp), async (c) => {
     const ct = c.req.header("content-type") || "";
     const p: Record<string, string> = ct.includes("json")
       ? await c.req.json().catch(() => ({}))
       : Object.fromEntries(new URLSearchParams(await c.req.text()));
-    // Public clients send client_id in the body; tolerate HTTP Basic too.
-    const basic = (c.req.header("authorization") || "").match(/^Basic (.+)$/);
-    if (!p.client_id && basic) p.client_id = decodeURIComponent(atob(basic[1]).split(":")[0]);
     const err = (error: string, error_description: string) =>
       c.json({ error, error_description }, 400, { "cache-control": "no-store" });
+    // Public clients send client_id in the body; tolerate HTTP Basic too. A
+    // Basic header that doesn't decode is a failed client authentication (RFC 6749 §5.2).
+    const basic = (c.req.header("authorization") || "").match(/^Basic (.*)$/i);
+    if (basic) {
+      let id: string | undefined;
+      try {
+        id = decodeURIComponent(atob(basic[1].trim()).split(":")[0]);
+      } catch {}
+      if (!id)
+        return c.json({ error: "invalid_client", error_description: "malformed Basic authorization header" }, 401, {
+          "cache-control": "no-store",
+          "WWW-Authenticate": 'Basic realm="dabloons"',
+        });
+      if (!p.client_id) p.client_id = id;
+    }
     if (typeof p.client_id !== "string" || !p.client_id) return err("invalid_request", "client_id is required");
     const db = await deps.openDb(c.env);
     try {

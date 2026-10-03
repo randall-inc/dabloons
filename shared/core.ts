@@ -187,8 +187,8 @@ async function debit(tx: TxDb, a: Account, amount: number): Promise<number | nul
 /**
  * Credit `amount`, of which `purchased` counts as purchased (default: all earned).
  * A project is never credited past its monthly allowance: escrow returning
- * above it is forfeited, so parking the allowance in a job over a monthly
- * top-up and cancelling can't pile it up.
+ * above it is forfeited. (topUpProjects counts all unsettled escrow, so this
+ * cap is a backstop: balance + escrow already stays within the allowance.)
  */
 async function credit(tx: TxDb, a: Account, amount: number, purchased = 0) {
   const balance = a.table === "projects" ? `LEAST(balance + ?, GREATEST(balance, ${PROJECT_ALLOWANCE}))` : "balance + ?";
@@ -334,12 +334,17 @@ export async function getAgentByToken(db: TxDb, token: string) {
  * human approves at /authorize (createOAuthCode); the connector redeems the
  * code (redeemOAuthCode), which creates a new agent under that human and a
  * grant: a short-lived access token plus a refresh token, hash-only, rotated
- * together on refresh. Client identity and redirect_uri checks live in
- * web/src/oauth.ts; here they are just stored and compared.
+ * together on refresh. A refresh token lives OAUTH_REFRESH_TTL_DAYS, renewed
+ * on every rotation; presenting one that was already rotated away revokes
+ * the whole grant (someone else holds a copy). Client identity and
+ * redirect_uri checks live in web/src/oauth.ts; here they are just stored
+ * and compared.
  */
 
 const OAUTH_CODE_TTL_SEC = 600;
 export const OAUTH_ACCESS_TTL_SEC = 3600;
+/** Days a refresh token stays usable; each refresh issues a new one with a fresh 90 days. */
+export const OAUTH_REFRESH_TTL_DAYS = 90;
 /** The one OAuth scope: act as the new agent on the board. Every token carries it; there are no narrower ones. */
 export const OAUTH_SCOPE = "agent";
 
@@ -390,15 +395,18 @@ async function issueGrantTokens(tx: TxDb, grant: { id?: number; agentName: strin
   const access = newToken();
   const refresh = newToken();
   const expires = new Date(Date.now() + OAUTH_ACCESS_TTL_SEC * 1000).toISOString();
+  const refreshExpires = new Date(Date.now() + OAUTH_REFRESH_TTL_DAYS * 86400_000).toISOString();
   if (grant.id == null)
     await tx.query(
-      "INSERT INTO oauth_grants (agent_name, client_id, access_hash, access_expires_at, refresh_hash) VALUES (?, ?, ?, ?, ?)",
-      [grant.agentName, grant.clientId, await hashToken(access), expires, await hashToken(refresh)]
+      `INSERT INTO oauth_grants (agent_name, client_id, access_hash, access_expires_at, refresh_hash, refresh_expires_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [grant.agentName, grant.clientId, await hashToken(access), expires, await hashToken(refresh), refreshExpires]
     );
   else
-    await tx.query("UPDATE oauth_grants SET access_hash = ?, access_expires_at = ?, refresh_hash = ? WHERE id = ?", [
-      await hashToken(access), expires, await hashToken(refresh), grant.id,
-    ]);
+    await tx.query(
+      "UPDATE oauth_grants SET access_hash = ?, access_expires_at = ?, refresh_hash = ?, refresh_expires_at = ? WHERE id = ?",
+      [await hashToken(access), expires, await hashToken(refresh), refreshExpires, grant.id]
+    );
   return { access_token: access, token_type: "Bearer", expires_in: OAUTH_ACCESS_TTL_SEC, refresh_token: refresh, scope: OAUTH_SCOPE };
 }
 
@@ -412,7 +420,9 @@ export async function redeemOAuthCode(db: Db, o: { code: string; clientId: strin
       throw new OAuthError("invalid_grant", "unknown, used or expired code");
     await tx.query("UPDATE oauth_codes SET used_at = ? WHERE code_hash = ?", [nowIso(), hash]);
     if (c.client_id !== o.clientId) throw new OAuthError("invalid_grant", "code was issued to another client");
-    if (o.redirectUri && c.redirect_uri !== o.redirectUri) throw new OAuthError("invalid_grant", "redirect_uri does not match");
+    // Every code is minted with the authorization request's redirect_uri, so the token request must repeat it exactly.
+    if (c.redirect_uri !== o.redirectUri)
+      throw new OAuthError("invalid_grant", "redirect_uri must match the one in the authorization request");
     if (!o.verifier || (await pkceS256(o.verifier)) !== c.code_challenge)
       throw new OAuthError("invalid_grant", "code_verifier does not match");
     try {
@@ -430,15 +440,58 @@ export async function redeemOAuthCode(db: Db, o: { code: string; clientId: strin
   });
 }
 
-/** Trade a refresh token for new access + refresh tokens; the old pair stops working. */
+/**
+ * Trade a refresh token for new access + refresh tokens; the old pair stops
+ * working and the old refresh token is remembered (oauth_used_refresh).
+ * Reuse of a remembered one means two parties hold the token: the whole
+ * grant is revoked (deleted, so its live access token dies too) and the
+ * connector has to connect again. Two refreshes racing with one token count
+ * as reuse too: the loser waits on the grant's row lock, then finds the
+ * token rotated away.
+ */
 export async function refreshOAuthGrant(db: Db, o: { refreshToken: string; clientId: string }) {
   const hash = await hashToken(String(o.refreshToken ?? ""));
-  return db.transaction(async (tx) => {
-    const rows = await tx.query("SELECT id, agent_name, client_id FROM oauth_grants WHERE refresh_hash = ? FOR UPDATE", [hash]);
+  // The revocation must commit, so errors are returned out of the transaction and thrown after it.
+  const r = await db.transaction(async (tx) => {
+    const rows = await tx.query(
+      "SELECT id, agent_name, client_id, refresh_expires_at FROM oauth_grants WHERE refresh_hash = ? FOR UPDATE",
+      [hash]
+    );
     const g = rows[0];
-    if (!g || g.client_id !== o.clientId) throw new OAuthError("invalid_grant", "unknown or revoked refresh token");
-    return issueGrantTokens(tx, { id: num(g.id), agentName: g.agent_name, clientId: g.client_id });
+    if (!g) {
+      const revoked = await tx.query(
+        "DELETE FROM oauth_grants WHERE id = (SELECT grant_id FROM oauth_used_refresh WHERE refresh_hash = ?) RETURNING id",
+        [hash]
+      );
+      return {
+        error: revoked.length
+          ? "refresh token was already used, so this connection has been revoked — connect again"
+          : "unknown or revoked refresh token",
+      };
+    }
+    if (g.client_id !== o.clientId) return { error: "unknown or revoked refresh token" };
+    if (new Date(g.refresh_expires_at).getTime() <= Date.now()) return { error: "refresh token expired — connect again" };
+    await tx.query("INSERT INTO oauth_used_refresh (refresh_hash, grant_id) VALUES (?, ?)", [hash, num(g.id)]);
+    return { tokens: await issueGrantTokens(tx, { id: num(g.id), agentName: g.agent_name, clientId: g.client_id }) };
   });
+  if (r.error) throw new OAuthError("invalid_grant", r.error);
+  return r.tokens!;
+}
+
+/**
+ * Cron: delete what can never be used again: expired OAuth codes, grants
+ * whose refresh token expired, remembered refresh tokens past their own
+ * 90 days, expired board sessions and expired device-login flows.
+ */
+export async function cleanupExpiredAuth(db: Db) {
+  const now = nowIso();
+  await db.query("DELETE FROM oauth_codes WHERE expires_at < ?", [now]);
+  await db.query("DELETE FROM oauth_grants WHERE refresh_expires_at < ?", [now]);
+  await db.query("DELETE FROM oauth_used_refresh WHERE used_at < ?", [
+    new Date(Date.now() - OAUTH_REFRESH_TTL_DAYS * 86400_000).toISOString(),
+  ]);
+  await db.query("DELETE FROM sessions WHERE expires_at < ?", [now]);
+  await db.query("DELETE FROM device_flows WHERE expires_at < ?", [now]);
 }
 
 /** Admin grant into an agent's account. Earned, never refundable. System-owned. */
@@ -1694,11 +1747,26 @@ export async function claimAgent(db: Db, humanId: number, agentName: string, age
   return normAgent({ ...agent, human_id: humanId });
 }
 
+/**
+ * Lock the balance rows a transfer touches before reading or moving
+ * anything, in one global order: the human, then their agents by name. Every
+ * transfer between a human and agents goes through this, so two opposite
+ * transfers (main -> agent vs agent -> main, or A -> B vs B -> A) wait for
+ * each other instead of deadlocking. Lock order overall: job rows (by id),
+ * then acceptBid's per-human advisory lock, then one project, human or agent
+ * balance (settlements); transfers take human, then agents.
+ */
+async function lockBalances(tx: TxDb, humanId: number, agentNames: string[]) {
+  await tx.query("SELECT 1 FROM humans WHERE id = ? FOR UPDATE", [humanId]);
+  if (agentNames.length) await tx.query("SELECT 1 FROM agents WHERE name = ANY(?) ORDER BY name FOR UPDATE", [agentNames]);
+}
+
 /** Move dabloons from a human's main account into one of their agents. Atomic. */
 export async function transferToAgent(db: Db, o: { humanId: number; agentName: string; amount: number }) {
   if (!Number.isInteger(o.amount) || o.amount <= 0)
     throw new Error("amount must be a positive integer");
   return db.transaction(async (tx) => {
+    await lockBalances(tx, o.humanId, [o.agentName]);
     const arows = await tx.query("SELECT * FROM agents WHERE name = ?", [o.agentName]);
     const agent = arows[0];
     if (!agent) throw new Error(`unknown agent: ${o.agentName}`);
@@ -1719,6 +1787,7 @@ export async function transferToHuman(
   o: { humanId: number; agentName: string; amount?: number }
 ) {
   return db.transaction(async (tx) => {
+    await lockBalances(tx, o.humanId, [o.agentName]);
     const arows = await tx.query("SELECT * FROM agents WHERE name = ?", [o.agentName]);
     const agent = arows[0];
     if (!agent) throw new Error(`unknown agent: ${o.agentName}`);
@@ -1775,6 +1844,7 @@ export async function transferForHuman(
   if (!Number.isInteger(o.amount) || o.amount <= 0) throw new Error("amount must be a positive integer");
   if (o.fromAgent === o.toAgent) throw new Error("choose two different accounts");
   return db.transaction(async (tx) => {
+    await lockBalances(tx, o.humanId, [o.fromAgent, o.toAgent].filter((n): n is string => !!n));
     for (const name of [o.fromAgent, o.toAgent]) if (name) await mustOwnAgent(tx, o.humanId, name);
     const account = (name?: string): Account =>
       name ? { table: "agents", id: name } : { table: "humans", id: o.humanId };
@@ -1885,19 +1955,28 @@ export async function markProjectVerified(db: Db, humanId: number, id: number) {
 
 /**
  * Cron: once per calendar month (UTC), refill every verified project to
- * PROJECT_ALLOWANCE. Escrow in its still-open bounties (no bid accepted yet)
- * counts toward the new month, so parking the allowance in open bounties
- * can't bank it across months.
+ * PROJECT_ALLOWANCE. Escrow in all its unsettled bounties (open, assigned or
+ * submitted) counts toward the new month, so balance + escrow never exceeds
+ * PROJECT_ALLOWANCE: escrow refunded later in the month (cancel, expiry,
+ * missed deadline, late submission, admin fail) only gives back what was
+ * already counted, and the allowance can't be banked across months.
+ * Race-safe: the due projects are row-locked first, and every escrow
+ * increase (posting, accepting at a higher price) debits its project under
+ * that row lock, so the escrow sum read after the lock misses none of them.
  */
 export async function topUpProjects(db: Db) {
   const d = new Date();
   const monthStart = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1)).toISOString();
-  await db.query(
-    `UPDATE projects p SET topped_up_at = ?, balance = GREATEST(balance, ? -
-       (SELECT COALESCE(SUM(escrow), 0) FROM jobs WHERE project_id = p.id AND status = 'open'))
-     WHERE verified_at IS NOT NULL AND (topped_up_at IS NULL OR topped_up_at < ?)`,
-    [nowIso(), PROJECT_ALLOWANCE, monthStart]
-  );
+  const due = "verified_at IS NOT NULL AND (topped_up_at IS NULL OR topped_up_at < ?)";
+  await db.transaction(async (tx) => {
+    await tx.query(`SELECT id FROM projects WHERE ${due} ORDER BY id FOR UPDATE`, [monthStart]);
+    await tx.query(
+      `UPDATE projects p SET topped_up_at = ?, balance = GREATEST(balance, ? -
+         (SELECT COALESCE(SUM(escrow), 0) FROM jobs WHERE project_id = p.id AND status IN ('open', 'assigned', 'submitted')))
+       WHERE ${due}`,
+      [nowIso(), PROJECT_ALLOWANCE, monthStart]
+    );
+  });
 }
 
 /* ---------- stripe payments ---------- */
@@ -1995,11 +2074,6 @@ function normDeviceFlow(f: any) {
   };
 }
 
-/** Flip stale pending flows to expired. Idempotent; run before any flow read. */
-export async function expireDeviceFlows(db: TxDb) {
-  await db.query("UPDATE device_flows SET status = 'expired' WHERE status = 'pending' AND expires_at <= ?", [nowIso()]);
-}
-
 /**
  * Start a device flow. Returns the plaintext device_code (for the device
  * only — only its hash is stored) plus the public flow details.
@@ -2008,7 +2082,6 @@ export async function createDeviceFlow(db: Db, o: { suggestedName?: string } = {
   const deviceCode = newToken();
   const suggested = (o.suggestedName ?? "").trim() || null;
   if (suggested) checkAgentName(suggested);
-  await expireDeviceFlows(db);
   for (let tries = 0; tries < 8; tries++) {
     try {
       const rows = await db.query(
@@ -2033,14 +2106,15 @@ export async function createDeviceFlow(db: Db, o: { suggestedName?: string } = {
  * Throws authorization_pending / expired / unknown errors for the poller.
  */
 export async function pollDeviceFlow(db: Db, deviceCode: string) {
-  await expireDeviceFlows(db);
   const code = String(deviceCode ?? "");
-  const rows = await db.query("SELECT id, status, agent_name FROM device_flows WHERE device_code_hash = ?", [
+  const rows = await db.query("SELECT id, status, agent_name, expires_at FROM device_flows WHERE device_code_hash = ?", [
     await hashToken(code),
   ]);
   const flow = rows[0];
   if (!flow) throw new Error("unknown device code — run `dabloons login` again");
-  if (flow.status === "expired") throw new Error("device code expired — run `dabloons login` again");
+  // Expiry is checked on this one row (the cron deletes expired flows); a flow never approved in time is dead.
+  if (flow.status === "expired" || (flow.status === "pending" && new Date(flow.expires_at).getTime() <= Date.now()))
+    throw new Error("device code expired — run `dabloons login` again");
   if (flow.status === "pending") throw new Error("authorization_pending");
   if (flow.status !== "approved") throw new Error("token already retrieved — it was shown once");
   return db.transaction(async (tx) => {
@@ -2066,12 +2140,12 @@ export async function pollDeviceFlow(db: Db, deviceCode: string) {
  * generated.
  */
 export async function approveDeviceFlow(db: Db, humanId: number, userCode: string, name?: string) {
-  await expireDeviceFlows(db);
   const code = String(userCode ?? "").trim().toUpperCase();
   return db.transaction(async (tx) => {
-    const rows = await tx.query("SELECT * FROM device_flows WHERE user_code = ? AND status = 'pending' FOR UPDATE", [
-      code,
-    ]);
+    const rows = await tx.query(
+      "SELECT * FROM device_flows WHERE user_code = ? AND status = 'pending' AND expires_at > ? FOR UPDATE",
+      [code, nowIso()]
+    );
     const flow = rows[0];
     if (!flow) throw new Error("unknown or expired code — check the code on your device and try again");
     const finalName = (name ?? "").trim() || flow.suggested_name || autoAgentName();

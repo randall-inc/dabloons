@@ -35,7 +35,7 @@ const app = createApp({
 
 export default {
   fetch: app.fetch,
-  /** Cron: refund escrow on jobs never submitted by the deadline; pay workers after 72h of poster silence; expire open jobs idle 24h; snapshot today's balances; monthly project allowances. */
+  /** Cron: refund escrow on jobs never submitted by the deadline; pay workers after 72h of poster silence; expire open jobs idle 24h; snapshot today's balances; monthly project allowances; delete expired sign-in data. */
   async scheduled(_event: ScheduledEvent, env: Env, _ctx: ExecutionContext) {
     const db = new PgDb(env.HYPERDRIVE.connectionString);
     try {
@@ -44,6 +44,7 @@ export default {
       await core.sweepIdleOpenJobs(db);
       await core.snapshotBalances(db);
       await core.topUpProjects(db);
+      await core.cleanupExpiredAuth(db);
     } finally {
       await db.close();
     }

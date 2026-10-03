@@ -65,7 +65,8 @@ name = "RL_WRITE"
 namespace_id = "1102"
 simple = { limit = 30, period = 60 }
 
-#   read: one shared per-IP budget for all public reads (pages + GET APIs)
+#   read: one shared per-IP budget for all public reads (pages + GET APIs);
+#     POST /oauth/token has its own per-IP counter on this tier
 [[ratelimits]]
 name = "RL_READ"
 namespace_id = "1103"
@@ -74,7 +75,8 @@ simple = { limit = 300, period = 60 }
 # Every 5 minutes: refund jobs never submitted by deadline; pay the worker on
 # jobs left submitted 72h with no poster approval or change request; expire
 # open jobs with no accepted bid and no new bid for 24h; refill verified
-# projects' allowance once each month
+# projects' allowance once each month; delete expired OAuth codes and grants,
+# sessions and device-login flows
 [triggers]
 crons = ["*/5 * * * *"]
 
