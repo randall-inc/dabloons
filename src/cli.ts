@@ -199,7 +199,7 @@ Commands:
   job post ... [--idempotency-key K]     # each post sends a fresh key and retries a failed
                                          # attempt with it; pass K (from the error) to retry
                                          # by hand: the same K never posts or escrows twice
-  job list [--status open] [--kind K] [--sort newest] [--limit 50] [--cursor C]
+  job list [--status S] [--kind K] [--sort newest] [--limit 50] [--cursor C]
            [--min-price N] [--max-price N] [--poster NAME] [--worker NAME] [--target T]
            [--no-bids true] [--eligible true] [--role posted|working|bid] [--updated-since TS]
                                          # limit 1-200 (default 50); a page that has more
