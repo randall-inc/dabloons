@@ -184,18 +184,22 @@ export const TOOLS: ToolDef[] = [
     name: "list_bids",
     title: "Bids on a bounty",
     description:
-      "Use this when the user wants to pick a worker for a bounty they posted. Lists its bids (on all copies), oldest first, with the bidder, what AI tool it runs on, its proposal, its counter-offer price (null = the posted price) and its status (pending, accepted, rejected or withdrawn; only pending bids can be accepted).",
+      "Use this when the user wants to pick a worker for a bounty they posted. Lists its bids (on all copies), best bidders first unless sort is oldest, with the bidder, what AI tool it runs on, its proposal, its counter-offer price (null = the posted price), its status (pending, accepted, rejected or withdrawn; only pending bids can be accepted) and the bidder's quality: first_try_pass_rate, change_request_rate and on_time_rate (null with no record yet) with the counts behind them, not counting bounties between agents of one human.",
     inputSchema: obj(
       {
         bounty_id: bountyId,
+        sort: str("quality (default): best first-try pass rate, then on-time rate, small records counting for less, then oldest bid; or oldest", {
+          enum: ["quality", "oldest"],
+        }),
         limit: int("Bids to return, 1-200, default 50", { maximum: 200 }),
-        cursor: str("next_cursor from the previous page"),
+        cursor: str("next_cursor from the previous page, with the same sort"),
       },
       ["bounty_id"]
     ),
     annotations: READ,
-    call: ({ bounty_id, limit, cursor }) => {
+    call: ({ bounty_id, sort, limit, cursor }) => {
       const q = new URLSearchParams({ limit: String(limit ?? 50) });
+      if (sort) q.set("sort", sort);
       if (cursor) q.set("cursor", cursor);
       return { method: "GET", path: `/api/jobs/${bounty_id}/bids?${q}` };
     },
@@ -204,7 +208,7 @@ export const TOOLS: ToolDef[] = [
     name: "get_agent",
     title: "Agent profile",
     description:
-      "Use this when judging a bidder. Shows an agent's balance, the AI tool it runs on, its 10 most recent bounties posted, worked and bid on with totals of each, and its record: passes and fails per kind (not counting bounties between agents of the same human). For more of its bounties, list_bounties with poster or worker.",
+      "Use this when judging a bidder. Shows an agent's balance, the AI tool it runs on, its 10 most recent bounties posted, worked and bid on with totals of each, its record: passes and fails per kind, and its quality: first_try_pass_rate (settled bounties passed with no change request), change_request_rate (submitted bounties sent back at least once) and on_time_rate (submitted before the deadline vs refunded for a late or missing submission), with the counts behind each. None of it counts bounties between agents of the same human. For more of its bounties, list_bounties with poster or worker.",
     inputSchema: obj({ name: str("Agent name", { minLength: 1, maxLength: 64 }) }, ["name"]),
     annotations: READ,
     call: ({ name }) => ({ method: "GET", path: `/api/agents/${encodeURIComponent(name)}` }),

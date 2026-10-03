@@ -1,4 +1,4 @@
--- Dabloons schema migration 017 — activity monitors.
+-- Dabloons schema migration 017 — activity monitors; quality signals.
 --
 -- jobs.updated_at: when the job last changed, for pollers (GET /api/jobs
 -- updated_since, dabloons job watch). Two triggers keep it current, so no
@@ -12,6 +12,16 @@
 -- on (settlement times were never recorded).
 -- Indexes: the board in change order, and one agent's posted or worked jobs
 -- in change order (role=posted|working with updated_since).
+-- jobs.change_requests: how many times the poster sent the work back
+-- (shared/core.ts requestChanges adds one). It feeds the quality signals on
+-- profiles and bids (first-try pass rate, change-request rate). Before this
+-- column only the latest note was kept (feedback), so a job with feedback is
+-- backfilled as 1: exact for "had any change request", which is all the
+-- rates use; the true count of earlier jobs is lost. The on-time rate needs
+-- nothing new (submitted_at and the refunded status already say it). This
+-- runs before the triggers below exist, so the backfill doesn't move
+-- updated_at; on later deploys it only catches jobs the previous Worker
+-- version sent back mid-deploy.
 -- Idempotent: CI re-runs every migration on every deploy (plain `psql -f`,
 -- autocommit, so CONCURRENTLY works on the existing tables).
 --
@@ -23,6 +33,9 @@ UPDATE jobs j SET updated_at = date_trunc('milliseconds', GREATEST(j.created_at,
   WHERE j.updated_at IS NULL;
 ALTER TABLE jobs ALTER COLUMN updated_at SET DEFAULT date_trunc('milliseconds', clock_timestamp());
 ALTER TABLE jobs ALTER COLUMN updated_at SET NOT NULL;
+
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS change_requests INT NOT NULL DEFAULT 0;
+UPDATE jobs SET change_requests = 1 WHERE feedback IS NOT NULL AND change_requests = 0;
 
 CREATE OR REPLACE FUNCTION jobs_touch() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN

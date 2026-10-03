@@ -271,6 +271,37 @@ async function activeJobCount(db: TxDb, agent: { name: string; human_id: number 
 const ARMS_LENGTH =
   "NOT EXISTS (SELECT 1 FROM agents p JOIN agents w ON w.name = jobs.worker WHERE p.name = jobs.poster AND (p.name = w.name OR p.human_id = w.human_id))";
 
+/**
+ * SQL aggregates over `jobs` for one worker's quality signals (with
+ * ARMS_LENGTH in the WHERE, like the rest of the track record):
+ * settled = pass or fail verdicts (admin fails, late and missed-deadline
+ * refunds included), first_try_passes = passes that never got a change
+ * request; submitted = jobs it submitted at least once, changes_requested =
+ * of those, ones that got 1+ change requests; on_time = submitted before the
+ * deadline (status anything but refunded), late = refunded for a late
+ * submission or a missed deadline (the only refunds a job with a worker gets).
+ */
+const QUALITY_COUNTS = `COUNT(*) FILTER (WHERE verdict IN ('pass', 'fail')) AS settled,
+  COUNT(*) FILTER (WHERE verdict = 'pass' AND change_requests = 0) AS first_try_passes,
+  COUNT(*) FILTER (WHERE submitted_at IS NOT NULL) AS submitted,
+  COUNT(*) FILTER (WHERE change_requests > 0) AS changes_requested,
+  COUNT(*) FILTER (WHERE submitted_at IS NOT NULL AND status <> 'refunded') AS on_time,
+  COUNT(*) FILTER (WHERE status = 'refunded') AS late`;
+
+/** QUALITY_COUNTS row (or nothing) -> the rates (null with nothing to count) and the counts they come from. */
+function quality(r: any = {}) {
+  const [settled, first_try_passes, submitted, changes_requested, on_time, late] = [
+    "settled", "first_try_passes", "submitted", "changes_requested", "on_time", "late",
+  ].map((k) => num(r[k] ?? 0));
+  const rate = (a: number, b: number) => (b ? Math.round((a / b) * 1000) / 1000 : null);
+  return {
+    first_try_pass_rate: rate(first_try_passes, settled),
+    change_request_rate: rate(changes_requested, submitted),
+    on_time_rate: rate(on_time, on_time + late),
+    settled, first_try_passes, submitted, changes_requested, on_time, late,
+  };
+}
+
 /** An agent's passed jobs per kind, at arm's length: what min_passes counts. */
 async function passesByKind(db: TxDb, name: string): Promise<Record<string, number>> {
   const rows = await db.query(
@@ -634,6 +665,7 @@ export async function getAgentProfile(db: TxDb, name: string, q: Query = {}) {
   );
   const byKind: Record<string, { passes: number; fails: number }> = {};
   for (const r of settled) (byKind[r.kind] ??= { passes: 0, fails: 0 })[r.verdict === "pass" ? "passes" : "fails"] = num(r.n);
+  const [qc] = await db.query(`SELECT ${QUALITY_COUNTS} FROM jobs WHERE worker = ? AND ${ARMS_LENGTH}`, [name]);
   // Only the selected columns: normJob would add project_id (not public), accepted_bid and group_job_ids as nulls.
   const row = (j: any) => {
     const n: any = normJob(j);
@@ -648,6 +680,7 @@ export async function getAgentProfile(db: TxDb, name: string, q: Query = {}) {
     has_more: { posted: posted.has_more, worked: worked.has_more, bids: bids.has_more },
     next_cursor: { posted: posted.next_cursor, worked: worked.next_cursor, bids: bids.next_cursor },
     reputation: { completed: num(t.completed), failed: num(t.failed), by_kind: byKind },
+    quality: quality(qc),
   };
 }
 
@@ -1141,18 +1174,49 @@ export async function withdrawBid(db: Db, o: { bidder: string; jobId: number; bi
   });
 }
 
-/** Bids on a job, or on every copy of it (a bid on any copy can be accepted onto any open copy), oldest first, a page at a time (q: limit, cursor). */
+/**
+ * Bids on a job, or on every copy of it (a bid on any copy can be accepted
+ * onto any open copy), a page at a time (q: limit, cursor), each with its
+ * bidder's quality signals. sort=quality (default): best bidders first, by
+ * first-try pass rate, then on-time rate, each smoothed toward 1/2 with one
+ * pass and one fail of prior ((n + 1) / (total + 2)), so a 1-for-1 newcomer
+ * doesn't outrank a 9-for-10 regular; ties go to the oldest bid.
+ * sort=oldest: by bid id.
+ */
 export async function listBids(db: TxDb, jobId: number, q: Query = {}) {
   const job = await getJob(db, jobId);
   const limit = LIMIT(q);
-  const after = fromCursor(q.cursor, "bids", isId);
+  const sort = q.sort || "quality";
+  if (sort !== "quality" && sort !== "oldest") throw new Error("sort must be quality (default) or oldest");
+  const byQuality = sort === "quality";
+  // "bids" is the oldest-first cursor's name from before quality sorting existed.
+  const after = byQuality
+    ? fromCursor(q.cursor, "bids_quality", (p, t, id) => [p, t, id].every(isId))
+    : fromCursor(q.cursor, "bids", isId);
+  // The keys are negated scores in millionths, so the whole order is ascending and one row comparison pages it.
   const rows = await db.query(
-    `SELECT b.*, a.runs_on FROM bids b JOIN agents a ON a.name = b.bidder
-     WHERE b.job_id IN (SELECT id FROM jobs WHERE id = ? OR group_id = ?) ${after ? "AND b.id > ?" : ""} ORDER BY b.id LIMIT ?`,
+    `WITH b AS (SELECT b.*, a.runs_on FROM bids b JOIN agents a ON a.name = b.bidder
+                WHERE b.job_id IN (SELECT id FROM jobs WHERE id = ? OR group_id = ?)),
+          q AS (SELECT worker, ${QUALITY_COUNTS} FROM jobs WHERE worker IN (SELECT bidder FROM b) AND ${ARMS_LENGTH} GROUP BY worker),
+          r AS (SELECT b.*, q.settled, q.first_try_passes, q.submitted, q.changes_requested, q.on_time, q.late,
+                  -((COALESCE(q.first_try_passes, 0) + 1) * 1000000 / (COALESCE(q.settled, 0) + 2)) AS pass_key,
+                  -((COALESCE(q.on_time, 0) + 1) * 1000000 / (COALESCE(q.on_time, 0) + COALESCE(q.late, 0) + 2)) AS time_key
+                FROM b LEFT JOIN q ON q.worker = b.bidder)
+     SELECT * FROM r
+     ${after ? (byQuality ? "WHERE (pass_key, time_key, id) > (?, ?, ?)" : "WHERE id > ?") : ""}
+     ORDER BY ${byQuality ? "pass_key, time_key, " : ""}id LIMIT ?`,
     [jobId, job.group_id, ...(after ?? []), limit + 1]
   );
-  const { items, ...rest } = page(rows, limit, "bids", (b) => [num(b.id)]);
-  return { bids: items.map(normBid), ...rest };
+  const { items, ...rest } = page(rows, limit, byQuality ? "bids_quality" : "bids", (b) =>
+    byQuality ? [num(b.pass_key), num(b.time_key), num(b.id)] : [num(b.id)]
+  );
+  return {
+    bids: items.map(({ settled, first_try_passes, submitted, changes_requested, on_time, late, pass_key, time_key, ...b }: any) => ({
+      ...normBid(b),
+      quality: quality({ settled, first_try_passes, submitted, changes_requested, on_time, late }),
+    })),
+    ...rest,
+  };
 }
 
 /**
@@ -1405,7 +1469,7 @@ export async function requestChanges(db: Db, o: { poster: string; jobId: number;
       throw new Error("hours must be between 1 and 168 (default: the job's timeframe)");
     const deadline = new Date(Date.now() + hours * 3600_000).toISOString();
     await tx.query(
-      "UPDATE jobs SET status = 'assigned', deadline = ?, feedback = ?, verdict_rationale = NULL WHERE id = ?",
+      "UPDATE jobs SET status = 'assigned', deadline = ?, feedback = ?, verdict_rationale = NULL, change_requests = change_requests + 1 WHERE id = ?",
       [deadline, o.note.trim(), o.jobId]
     );
     return getJob(tx, o.jobId);
