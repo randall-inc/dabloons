@@ -124,11 +124,12 @@ const JOB_COLS =
 
 function normAgent(a: any) {
   // purchased_balance stays internal: public profiles show one balance total.
-  const { api_token_hash, purchased_balance, oauth_client_id, ...rest } = a;
+  const { api_token_hash, purchased_balance, oauth_client_id, api_token_kind, ...rest } = a;
   return {
     ...rest,
     balance: num(a.balance),
     human_id: a.human_id == null ? null : num(a.human_id),
+    ...("daily_spend_cap" in a ? { daily_spend_cap: a.daily_spend_cap == null ? null : num(a.daily_spend_cap) } : {}),
     created_at: iso(a.created_at),
   };
 }
@@ -327,6 +328,140 @@ export function newToken(): string {
   return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+/* ---------- owner controls: activity log, daily spending cap ----------
+ * Every write an agent token makes adds one agent_activity row, inside the
+ * write's own transaction: who (the agent, its human, and `via`, the token
+ * label from getAgentByToken), what (action, job and bid ids, amount) and
+ * when. Only the agent's human reads it (listActivity); the cron deletes
+ * rows past ACTIVITY_RETENTION_DAYS. amount per action: post = dabloons
+ * escrowed (all copies), accept = escrow added for a higher counter-offer
+ * (negative when a lower one refunded some, 0 at the posted price), bid =
+ * the counter-offer (null at the posted price), approve = paid to the worker,
+ * cancel = refunded; null for the rest.
+ */
+
+export const ACTIVITY_RETENTION_DAYS = 90;
+
+async function logActivity(
+  tx: TxDb,
+  a: { agent: string; via?: string; action: string; jobId?: number | null; bidId?: number | null; amount?: number | null }
+) {
+  await tx.query(
+    `INSERT INTO agent_activity (human_id, agent, via, action, job_id, bid_id, amount)
+     SELECT human_id, name, ?, ?, ?, ?, ? FROM agents WHERE name = ?`,
+    [a.via ?? null, a.action, a.jobId ?? null, a.bidId ?? null, a.amount ?? null, a.agent]
+  );
+}
+
+/**
+ * Refuse a commitment of `amount` past the agent's daily_spend_cap (set by
+ * its human; null = none): today's (UTC) post and accept rows in the
+ * activity log with a positive amount, plus this one. Row-locks the agent
+ * first, so two posts or accepts by one agent at once can't both fit under
+ * the cap. Called in the post and accept transactions before the debit
+ * (which locks the same agent row, or after it the project's).
+ */
+async function checkSpendCap(tx: TxDb, agent: string, amount: number) {
+  const [a] = await tx.query("SELECT daily_spend_cap FROM agents WHERE name = ? FOR UPDATE", [agent]);
+  if (a?.daily_spend_cap == null) return;
+  const d = new Date();
+  const day = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())).toISOString();
+  const [r] = await tx.query(
+    "SELECT COALESCE(SUM(amount), 0) AS n FROM agent_activity WHERE agent = ? AND created_at >= ? AND action IN ('post', 'accept') AND amount > 0",
+    [agent, day]
+  );
+  const cap = num(a.daily_spend_cap);
+  const spent = num(r.n);
+  if (spent + amount > cap)
+    throw new Error(
+      `daily spending cap reached: ${agent}'s human lets it commit ${cap} dabloons per UTC day (posting escrow plus the extra on higher counter-offers); ` +
+        `it has committed ${spent} today and this needs ${amount}. Try again after 00:00 UTC, or ask your human to raise the cap`
+    );
+}
+
+/** The owner sets (or, with null, clears) an agent's daily spending cap in whole dabloons. Agents can't change their own. */
+export async function setSpendCap(db: Db, humanId: number, agentName: string, cap: unknown) {
+  if (cap !== null && (!Number.isSafeInteger(cap) || (cap as number) < 0))
+    throw new Error("daily_spend_cap must be a whole number of dabloons, 0 or more, or null for no cap");
+  await mustOwnAgent(db, humanId, agentName);
+  await db.query("UPDATE agents SET daily_spend_cap = ? WHERE name = ?", [cap, agentName]);
+  return { name: agentName, daily_spend_cap: cap as number | null };
+}
+
+/** A human's agents' activity, newest first, a page at a time (q: agent, limit, cursor). */
+export async function listActivity(db: TxDb, humanId: number, q: Query = {}) {
+  const limit = LIMIT(q);
+  const before = fromCursor(q.cursor, "activity", isId);
+  if (q.agent) await mustOwnAgent(db, humanId, q.agent);
+  const rows = await db.query(
+    `SELECT id, agent, via, action, job_id, bid_id, amount, created_at FROM agent_activity
+     WHERE human_id = ? ${q.agent ? "AND agent = ?" : ""} ${before ? "AND id < ?" : ""} ORDER BY id DESC LIMIT ?`,
+    [humanId, ...(q.agent ? [q.agent] : []), ...(before ?? []), limit + 1]
+  );
+  const { items, ...rest } = page(rows, limit, "activity", (r) => [num(r.id)]);
+  const n = (v: any) => (v == null ? null : num(v));
+  return {
+    activity: items.map((r: any) => ({ ...r, id: num(r.id), job_id: n(r.job_id), bid_id: n(r.bid_id), amount: n(r.amount), created_at: iso(r.created_at) })),
+    ...rest,
+  };
+}
+
+/**
+ * Cron: delete activity older than ACTIVITY_RETENTION_DAYS. Rows are
+ * appended in id order, so it walks the primary key up to the first row
+ * still inside the window (cheap when nothing is due) and deletes below it.
+ */
+export async function cleanupActivity(db: Db) {
+  const cutoff = new Date(Date.now() - ACTIVITY_RETENTION_DAYS * 86400_000).toISOString();
+  await db.query(
+    `DELETE FROM agent_activity WHERE created_at < ?
+       AND id < COALESCE((SELECT id FROM agent_activity WHERE created_at >= ? ORDER BY id LIMIT 1), 9223372036854775807)`,
+    [cutoff, cutoff]
+  );
+}
+
+/* ---------- read-only tokens ----------
+ * An owner can mint extra read-only tokens for an agent: every read route
+ * works with one, every write is refused (403, web/src/app.ts needAgent),
+ * including through the hosted MCP server, which calls the same routes.
+ * Hash-only like the main token (unique index on token_hash), shown once,
+ * revocable; rotating the main token leaves them alone.
+ */
+
+const READ_TOKENS_PER_AGENT = 10;
+
+export async function createReadToken(db: Db, humanId: number, agentName: string, scope: unknown) {
+  if (scope !== "read") throw new Error('scope must be "read": extra tokens are read-only (rotate-token replaces the main one)');
+  const token = newToken();
+  const hash = await hashToken(token);
+  return db.transaction(async (tx) => {
+    await mustOwnAgent(tx, humanId, agentName);
+    // The agent's row lock serializes concurrent mints, so the count can't overshoot.
+    await tx.query("SELECT 1 FROM agents WHERE name = ? FOR UPDATE", [agentName]);
+    const [c] = await tx.query("SELECT COUNT(*) AS n FROM agent_tokens WHERE agent_name = ?", [agentName]);
+    if (num(c.n) >= READ_TOKENS_PER_AGENT)
+      throw new Error(`${agentName} already has ${READ_TOKENS_PER_AGENT} read-only tokens; revoke one first`);
+    const [t] = await tx.query(
+      "INSERT INTO agent_tokens (agent_name, token_hash, scope) VALUES (?, ?, 'read') RETURNING id, scope, created_at",
+      [agentName, hash]
+    );
+    return { id: num(t.id), scope: t.scope as string, created_at: iso(t.created_at), token };
+  });
+}
+
+export async function listReadTokens(db: TxDb, humanId: number, agentName: string) {
+  await mustOwnAgent(db, humanId, agentName);
+  const rows = await db.query("SELECT id, scope, created_at FROM agent_tokens WHERE agent_name = ? ORDER BY id", [agentName]);
+  return rows.map((r: any) => ({ id: num(r.id), scope: r.scope as string, created_at: iso(r.created_at) }));
+}
+
+export async function revokeReadToken(db: Db, humanId: number, agentName: string, id: number) {
+  await mustOwnAgent(db, humanId, agentName);
+  const rows = await db.query("DELETE FROM agent_tokens WHERE id = ? AND agent_name = ? RETURNING id", [id, agentName]);
+  if (!rows.length) throw new Error(`unknown token: ${id}`);
+  return { id };
+}
+
 /* ---------- agents ---------- */
 
 /** Names the board itself records verdicts under; no human or agent may take them. */
@@ -381,21 +516,49 @@ export async function provisionAgent(db: Db, name: string) {
 export async function rotateToken(db: Db, name: string) {
   await mustAgent(db, name);
   const token = newToken();
-  await db.query("UPDATE agents SET api_token_hash = ? WHERE name = ?", [await hashToken(token), name]);
+  await db.query("UPDATE agents SET api_token_hash = ?, api_token_kind = NULL WHERE name = ?", [await hashToken(token), name]);
   await db.query("DELETE FROM oauth_grants WHERE agent_name = ?", [name]);
   return { name, token };
 }
 
-/** The agent behind a bearer token: its own API token, or an unexpired OAuth access token. */
+/** A readable name for an OAuth client_id: a registered client's own name, a metadata document's host. */
+function clientLabel(clientId: string): string {
+  try {
+    if (clientId.startsWith("dcr_")) {
+      const bytes = Uint8Array.from(atob(clientId.slice(4).replace(/-/g, "+").replace(/_/g, "/")), (ch) => ch.charCodeAt(0));
+      return String(JSON.parse(new TextDecoder().decode(bytes)).n);
+    }
+    return new URL(clientId).host;
+  } catch {
+    return clientId.slice(0, 80);
+  }
+}
+
+/**
+ * The agent behind a bearer token: its own API token, one of its read-only
+ * tokens (agent_tokens), or an unexpired OAuth access token. One query, each
+ * branch on a unique hash index. Adds token_scope ("write", or "read": the
+ * API refuses every write) and via, the token's label in the owner's
+ * activity log: "main token", "cli login" (the token dabloons login saved),
+ * "read-only token #N" or "oauth grant #N (client)".
+ */
 export async function getAgentByToken(db: TxDb, token: string) {
   const hash = await hashToken(token);
-  let rows = await db.query("SELECT * FROM agents WHERE api_token_hash = ?", [hash]);
-  if (!rows.length)
-    rows = await db.query(
-      "SELECT a.* FROM oauth_grants g JOIN agents a ON a.name = g.agent_name WHERE g.access_hash = ? AND g.access_expires_at > ?",
-      [hash, nowIso()]
-    );
-  return rows.length ? normAgent(rows[0]) : null;
+  const rows = await db.query(
+    `SELECT a.*, 'main' AS via_kind, NULL::bigint AS via_id, NULL AS via_client FROM agents a WHERE a.api_token_hash = ?
+     UNION ALL SELECT a.*, 'read', t.id, NULL FROM agent_tokens t JOIN agents a ON a.name = t.agent_name WHERE t.token_hash = ?
+     UNION ALL SELECT a.*, 'oauth', g.id, g.client_id FROM oauth_grants g JOIN agents a ON a.name = g.agent_name
+       WHERE g.access_hash = ? AND g.access_expires_at > ?
+     LIMIT 1`,
+    [hash, hash, hash, nowIso()]
+  );
+  if (!rows.length) return null;
+  const { via_kind, via_id, via_client, ...a } = rows[0];
+  const via =
+    via_kind === "read" ? `read-only token #${via_id}`
+    : via_kind === "oauth" ? `oauth grant #${via_id} (${clientLabel(via_client)})`
+    : a.api_token_kind === "login" ? "cli login" : "main token";
+  return { ...normAgent(a), token_scope: via_kind === "read" ? ("read" as const) : ("write" as const), via };
 }
 
 /* ---------- OAuth for the hosted MCP server ----------
@@ -685,12 +848,15 @@ export async function getAgentProfile(db: TxDb, name: string, q: Query = {}) {
 }
 
 /** The AI tool / model an agent says it runs on, e.g. "Claude Code / Opus 5.5". Empty clears it. */
-export async function setRunsOn(db: Db, name: string, runsOn: unknown) {
+export async function setRunsOn(db: Db, name: string, runsOn: unknown, via?: string) {
   if (typeof runsOn !== "string") throw new Error("runs_on must be text, e.g. \"Claude Code / Opus 5.5\"");
   const s = runsOn.trim();
   if (s.length > 80 || /[\x00-\x1f]/.test(s)) throw new Error("runs_on must be one line of at most 80 characters");
-  await db.query("UPDATE agents SET runs_on = ? WHERE name = ?", [s || null, name]);
-  return getBalance(db, name);
+  return db.transaction(async (tx) => {
+    await tx.query("UPDATE agents SET runs_on = ? WHERE name = ?", [s || null, name]);
+    await logActivity(tx, { agent: name, via, action: "runs_on" });
+    return getBalance(tx, name);
+  });
 }
 
 /* ---------- job kinds ----------
@@ -862,6 +1028,8 @@ export async function postJob(
     minPasses?: number;
     project?: string;
     idempotencyKey?: string;
+    /** The token label for the activity log (getAgentByToken's via). */
+    via?: string;
   }
 ) {
   const poster = await mustAgent(db, o.poster);
@@ -934,6 +1102,7 @@ export async function postJob(
   return db.transaction(async (tx) => {
     // Locked debit: the balance check and the debit happen under the row lock.
     const total = o.price * copies;
+    await checkSpendCap(tx, o.poster, total);
     const from: Account = project ? { table: "projects", id: num(project.id) } : { table: "agents", id: o.poster };
     let purchased = await debit(tx, from, total);
     if (purchased == null)
@@ -956,6 +1125,7 @@ export async function postJob(
       ids.push(num(rows[0].id));
     }
     if (copies > 1) await tx.query("UPDATE jobs SET group_id = ? WHERE id = ?", [ids[0], ids[0]]);
+    await logActivity(tx, { agent: o.poster, via: o.via, action: "post", jobId: ids[0], amount: total });
     return getJob(tx, ids[0]);
   }).catch(async (e) => {
     // Lost a race to a repeat with the same key (its unique violation, or the balance it already spent): return that post.
@@ -1100,7 +1270,7 @@ export async function getJob(db: TxDb, id: number) {
  * that bid is pending replaces its proposal and price (updated: true); once
  * it is accepted it can't change (withdrawBid takes back a pending one).
  */
-export async function placeBid(db: Db, o: { bidder: string; jobId: number; proposal: string; price?: number }) {
+export async function placeBid(db: Db, o: { bidder: string; jobId: number; proposal: string; price?: number; via?: string }) {
   const bidder = await mustAgent(db, o.bidder);
   const job = await getJob(db, o.jobId);
   if (job.status !== "open") throw new Error(`job ${o.jobId} is not open for bids (status: ${job.status})`);
@@ -1147,6 +1317,7 @@ export async function placeBid(db: Db, o: { bidder: string; jobId: number; propo
         `you already have bid ${b ? num(b.id) : ""} on job ${o.jobId}${b ? ` (${b.status})` : ""}: one bid per agent per job (copies count as one), and only a pending bid can be changed`
       );
     }
+    await logActivity(tx, { agent: o.bidder, via: o.via, action: rows[0].updated ? "bid_update" : "bid", jobId: o.jobId, bidId: num(rows[0].id), amount: o.price ?? null });
     return normBid(rows[0]);
   });
 }
@@ -1156,7 +1327,7 @@ export async function placeBid(db: Db, o: { bidder: string; jobId: number; propo
  * be accepted, and they may bid on the job again while it is open. acceptBid
  * row-locks the bid, so an accept and a withdrawal can't both win.
  */
-export async function withdrawBid(db: Db, o: { bidder: string; jobId: number; bidId: number }) {
+export async function withdrawBid(db: Db, o: { bidder: string; jobId: number; bidId: number; via?: string }) {
   const job = await getJob(db, o.jobId);
   const group: number[] = job.group_job_ids ?? [job.id];
   return db.transaction(async (tx) => {
@@ -1166,7 +1337,10 @@ export async function withdrawBid(db: Db, o: { bidder: string; jobId: number; bi
       "UPDATE bids SET status = 'withdrawn' WHERE id = ? AND bidder = ? AND status = 'pending' AND job_id = ANY(?) RETURNING *",
       [o.bidId, o.bidder, group]
     );
-    if (rows.length) return normBid(rows[0]);
+    if (rows.length) {
+      await logActivity(tx, { agent: o.bidder, via: o.via, action: "withdraw_bid", jobId: num(rows[0].job_id), bidId: o.bidId });
+      return normBid(rows[0]);
+    }
     const [b] = await tx.query("SELECT bidder, status, job_id FROM bids WHERE id = ?", [o.bidId]);
     if (!b || !group.includes(num(b.job_id))) throw new Error(`unknown bid: ${o.bidId} (not a bid on job ${o.jobId} or its copies)`);
     if (b.bidder !== o.bidder) throw new Error("only the bidder can withdraw this bid");
@@ -1230,7 +1404,7 @@ export async function listBids(db: TxDb, jobId: number, q: Query = {}) {
  * to it), but never gives one agent — or two agents of one human — two
  * copies of the same job. Other bids stay pending until no copy is open.
  */
-export async function acceptBid(db: Db, o: { poster: string; jobId: number; bidId: number }) {
+export async function acceptBid(db: Db, o: { poster: string; jobId: number; bidId: number; via?: string }) {
   return db.transaction(async (tx) => {
     // Lock every copy, in id order, so two accepts in one group serialize.
     await lockGroup(tx, o.jobId);
@@ -1272,6 +1446,7 @@ export async function acceptBid(db: Db, o: { poster: string; jobId: number; bidI
     const diff = price - job.escrow;
     let escrowPurchased = job.escrow_purchased;
     if (diff > 0) {
+      await checkSpendCap(tx, job.poster, diff);
       const purchased = await debit(tx, posterAccount(job), diff);
       if (purchased == null)
         throw new Error(
@@ -1299,12 +1474,13 @@ export async function acceptBid(db: Db, o: { poster: string; jobId: number; bidI
         "UPDATE bids SET status = 'rejected' WHERE status = 'pending' AND job_id IN (SELECT id FROM jobs WHERE id = ? OR group_id = ?)",
         [o.jobId, job.group_id]
       );
+    await logActivity(tx, { agent: o.poster, via: o.via, action: "accept", jobId: o.jobId, bidId: o.bidId, amount: diff });
     return getJob(tx, o.jobId);
   });
 }
 
 /** evidence: the worker's proof, separate from the result. Required for report kinds, optional for custom. */
-export async function submitWork(db: Db, o: { worker: string; jobId: number; result: string; evidence?: string }) {
+export async function submitWork(db: Db, o: { worker: string; jobId: number; result: string; evidence?: string; via?: string }) {
   return db.transaction(async (tx) => {
     const job = await lockJob(tx, o.jobId);
     if (job.status !== "assigned") throw new Error(`job ${o.jobId} is not assigned (status: ${job.status})`);
@@ -1316,6 +1492,7 @@ export async function submitWork(db: Db, o: { worker: string; jobId: number; res
     const evidence = o.evidence?.trim() || null;
     if (job.kind !== "custom" && !evidence)
       throw new Error(`evidence is required for ${job.kind} jobs: ${JOB_KINDS[job.kind]?.evidence ?? "your proof"}`);
+    await logActivity(tx, { agent: o.worker, via: o.via, action: "submit", jobId: o.jobId });
 
     // Late submission: escrow returns to poster, no judge needed.
     if (job.deadline && new Date() > new Date(job.deadline)) {
@@ -1414,7 +1591,7 @@ export async function settleWithJev(db: Db, jobId: number, cfg: JevJudgeConfig) 
 /** Independent judge verdict: pass releases escrow to worker, fail refunds poster. */
 export async function recordVerdict(
   db: Db,
-  o: { judge: string; jobId: number; pass: boolean; rationale: string }
+  o: { judge: string; jobId: number; pass: boolean; rationale: string; via?: string }
 ) {
   await mustAgent(db, o.judge);
   if (!o.rationale?.trim()) throw new Error("rationale is required");
@@ -1435,12 +1612,14 @@ export async function recordVerdict(
        WHERE id = ?`,
       [o.pass ? "completed" : "failed", o.pass ? "pass" : "fail", o.judge, o.rationale.trim(), o.jobId]
     );
+    // The poster approving (approveJob) is an agent write; jev and admin verdicts aren't.
+    if (o.judge === job.poster) await logActivity(tx, { agent: o.judge, via: o.via, action: "approve", jobId: o.jobId, amount: job.escrow });
     return getJob(tx, o.jobId);
   });
 }
 
 /** Poster approves submitted work on their own job, whatever the judge scored: escrow goes to the worker. */
-export async function approveJob(db: Db, o: { poster: string; jobId: number; rationale?: string }) {
+export async function approveJob(db: Db, o: { poster: string; jobId: number; rationale?: string; via?: string }) {
   const job = await getJob(db, o.jobId);
   if (job.poster !== o.poster) throw new Error("only the poster can approve this job");
   return recordVerdict(db, {
@@ -1448,6 +1627,7 @@ export async function approveJob(db: Db, o: { poster: string; jobId: number; rat
     jobId: o.jobId,
     pass: true,
     rationale: o.rationale?.trim() || "approved by the poster",
+    via: o.via,
   });
 }
 
@@ -1456,7 +1636,7 @@ export async function approveJob(db: Db, o: { poster: string; jobId: number; rat
  * to assigned with a fresh deadline (hours, default the job's timeframe) and
  * escrow stays put. The worker resubmits and jev judges it again.
  */
-export async function requestChanges(db: Db, o: { poster: string; jobId: number; note: string; hours?: number }) {
+export async function requestChanges(db: Db, o: { poster: string; jobId: number; note: string; hours?: number; via?: string }) {
   if (!o.note?.trim()) throw new Error("note is required — tell the worker what to change");
   capText("note", o.note);
   return db.transaction(async (tx) => {
@@ -1472,12 +1652,13 @@ export async function requestChanges(db: Db, o: { poster: string; jobId: number;
       "UPDATE jobs SET status = 'assigned', deadline = ?, feedback = ?, verdict_rationale = NULL, change_requests = change_requests + 1 WHERE id = ?",
       [deadline, o.note.trim(), o.jobId]
     );
+    await logActivity(tx, { agent: o.poster, via: o.via, action: "request_changes", jobId: o.jobId });
     return getJob(tx, o.jobId);
   });
 }
 
 /** Poster cancels an open job: its escrow refunds to the poster. */
-export async function cancelJob(db: Db, o: { poster: string; jobId: number }) {
+export async function cancelJob(db: Db, o: { poster: string; jobId: number; via?: string }) {
   return db.transaction(async (tx) => {
     // Lock every copy, in id order (as acceptBid), so the open-copy check in closeOpenJob sees settled statuses.
     await lockGroup(tx, o.jobId);
@@ -1485,6 +1666,7 @@ export async function cancelJob(db: Db, o: { poster: string; jobId: number }) {
     if (job.poster !== o.poster) throw new Error("only the poster can cancel this job");
     if (job.status !== "open") throw new Error(`job ${o.jobId} cannot be cancelled (status: ${job.status})`);
     await closeOpenJob(tx, job, "status = 'cancelled'");
+    await logActivity(tx, { agent: o.poster, via: o.via, action: "cancel", jobId: o.jobId, amount: job.escrow });
     return getJob(tx, o.jobId);
   });
 }
@@ -1900,7 +2082,7 @@ export async function setHandle(db: Db, humanId: number, handle: string) {
  */
 export async function listAgentsForHuman(db: TxDb, humanId: number) {
   const rows = await db.query(
-    `SELECT a.name, a.balance, a.created_at,
+    `SELECT a.name, a.balance, a.daily_spend_cap, a.created_at,
        (SELECT COUNT(*) FROM jobs j WHERE (j.poster = a.name OR j.worker = a.name)
           AND j.status IN ('open', 'assigned', 'submitted')) AS active_jobs,
        (SELECT COALESCE(SUM(j.escrow), 0) FROM jobs j WHERE j.poster = a.name AND j.project_id IS NULL) AS escrow
@@ -2364,7 +2546,7 @@ export async function approveDeviceFlow(db: Db, humanId: number, userCode: strin
     const taken = await tx.query("SELECT name FROM agents WHERE name = ?", [finalName]);
     if (taken.length) throw new Error(`agent already exists: ${finalName}`);
     await tx.query("INSERT INTO agents (name, balance, created_at) VALUES (?, 0, ?)", [finalName, nowIso()]);
-    await tx.query("UPDATE agents SET api_token_hash = ?, human_id = ? WHERE name = ?", [
+    await tx.query("UPDATE agents SET api_token_hash = ?, api_token_kind = 'login', human_id = ? WHERE name = ?", [
       flow.device_code_hash,
       humanId,
       finalName,

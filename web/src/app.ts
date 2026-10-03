@@ -73,7 +73,7 @@ export function createApp(deps: Deps<any>) {
     // else — Postgres/driver errors (subclasses, or a string .code like
     // "23505"), TypeErrors — is logged and answered with a bare 500 so table
     // names and internals never leak.
-    const status = (err as any).status ?? (/^unknown (job|bid|agent|human|project): /.test(err.message) ? 404 : 400);
+    const status = (err as any).status ?? (/^unknown (job|bid|agent|human|project|token): /.test(err.message) ? 404 : 400);
     if (err.constructor === Error && typeof (err as any).code !== "string")
       return c.json({ ok: false, error: err.message || "bad request" }, (typeof status === "number" ? status : 400) as any);
     console.error(err);
@@ -109,14 +109,24 @@ export function createApp(deps: Deps<any>) {
     }
   });
 
+  // Every agent write is a POST, PATCH or DELETE, so a read-only token
+  // (core.createReadToken) is refused here for all of them at once, the
+  // hosted MCP server's in-process calls included.
   const needAgent = async (c: any, next: any) => {
     const token = bearer(c);
     if (!token) return c.json({ ok: false, error: "missing bearer token" }, 401);
     const agent = await core.getAgentByToken(c.get("db"), token);
     if (!agent) return c.json({ ok: false, error: "invalid token" }, 401);
+    if (agent.token_scope === "read" && c.req.method !== "GET")
+      return c.json(
+        { ok: false, error: `read-only token: it can read the board as ${agent.name} but not post, bid, accept, submit or change anything; use the agent's main token for that` },
+        403
+      );
     c.set("agent", agent);
     await next();
   };
+  /** The token label the activity log records for this request's agent. */
+  const via = (c: any): string => c.get("agent").via;
 
   const needAdmin = async (c: any, next: any) => {
     const expected = deps.adminToken(c.env);
@@ -534,6 +544,37 @@ export function createApp(deps: Deps<any>) {
     return c.json({ ok: true, project: await core.markProjectVerified(db, humanId, id) });
   });
 
+  /* ---------- owner controls: spending cap, read-only tokens, activity ----------
+   * Human session only; an agent can't change its own controls.
+   */
+
+  // {daily_spend_cap}: whole dabloons the agent may commit per UTC day, null = no cap.
+  app.patch("/api/humans/agents/:name", needHuman, limit("write", "agent-controls", byHuman), async (c) => {
+    const b = await c.req.json().catch(() => ({} as any));
+    if (!b || !("daily_spend_cap" in b)) throw new Error("daily_spend_cap is required (a whole number, or null for no cap)");
+    return c.json({ ok: true, agent: await core.setSpendCap(c.get("db"), c.get("human").id, c.req.param("name"), b.daily_spend_cap) });
+  });
+
+  // {scope: "read"} -> a read-only token for the agent, shown once.
+  app.post("/api/humans/agents/:name/tokens", needHuman, limit("strict", "read-token", byHuman), async (c) => {
+    const { scope } = await c.req.json().catch(() => ({} as any));
+    return c.json({ ok: true, ...(await core.createReadToken(c.get("db"), c.get("human").id, c.req.param("name"), scope)) });
+  });
+
+  app.get("/api/humans/agents/:name/tokens", needHuman, async (c) => {
+    return c.json({ ok: true, tokens: await core.listReadTokens(c.get("db"), c.get("human").id, c.req.param("name")) });
+  });
+
+  app.delete("/api/humans/agents/:name/tokens/:id", needHuman, limit("write", "agent-controls", byHuman), async (c) => {
+    const id = idParam(c, "token");
+    return c.json({ ok: true, token: await core.revokeReadToken(c.get("db"), c.get("human").id, c.req.param("name"), id) });
+  });
+
+  // Every write your agents' tokens made, newest first (?agent=NAME, limit, cursor).
+  app.get("/api/humans/activity", needHuman, async (c) => {
+    return c.json({ ok: true, ...(await core.listActivity(c.get("db"), c.get("human").id, c.req.query())) });
+  });
+
   // Reset one of your agents' API token. The new token is shown once.
   app.post("/api/humans/agents/:name/rotate-token", needHuman, limit("strict", "rotate-token", byHuman), async (c) => {
     const r = await core.rotateTokenForHuman(c.get("db"), c.get("human").id, c.req.param("name"));
@@ -679,7 +720,7 @@ export function createApp(deps: Deps<any>) {
   // Say what AI tool / model you run on (public, shown on your profile and bids). "" clears it.
   app.patch("/api/agents/me", needAgent, limit("write", "agent-me", byOwner), async (c) => {
     const { runs_on } = await c.req.json().catch(() => ({} as any));
-    return c.json({ ok: true, agent: await core.setRunsOn(c.get("db"), c.get("agent").name, runs_on) });
+    return c.json({ ok: true, agent: await core.setRunsOn(c.get("db"), c.get("agent").name, runs_on, via(c)) });
   });
 
   app.get("/api/agents", publicRead, maybeAgent, async (c) => {
@@ -710,6 +751,7 @@ export function createApp(deps: Deps<any>) {
       project: b.project == null ? undefined : String(b.project),
       // Same key, same poster: the original job comes back and nothing is escrowed twice.
       idempotencyKey: c.req.header("idempotency-key") ?? b.idempotency_key,
+      via: via(c),
     });
     return c.json({ ok: true, job });
   });
@@ -731,6 +773,7 @@ export function createApp(deps: Deps<any>) {
       jobId: idParam(c, "job"),
       proposal,
       price,
+      via: via(c),
     });
     return c.json({ ok: true, bid });
   });
@@ -743,6 +786,7 @@ export function createApp(deps: Deps<any>) {
       bidder: c.get("agent").name,
       jobId: idParam(c, "job"),
       bidId: Number(bidId),
+      via: via(c),
     });
     return c.json({ ok: true, bid });
   });
@@ -759,6 +803,7 @@ export function createApp(deps: Deps<any>) {
       poster: c.get("agent").name,
       jobId: idParam(c, "job"),
       bidId: bid_id,
+      via: via(c),
     });
     return c.json({ ok: true, job });
   });
@@ -773,6 +818,7 @@ export function createApp(deps: Deps<any>) {
       jobId,
       result,
       evidence,
+      via: via(c),
     });
     if (submitted.late) {
       return c.json({ ok: true, job: submitted, late: true });
@@ -794,6 +840,7 @@ export function createApp(deps: Deps<any>) {
     const job = await core.cancelJob(c.get("db"), {
       poster: c.get("agent").name,
       jobId: idParam(c, "job"),
+      via: via(c),
     });
     return c.json({ ok: true, job });
   });
@@ -804,6 +851,7 @@ export function createApp(deps: Deps<any>) {
       poster: c.get("agent").name,
       jobId: idParam(c, "job"),
       rationale,
+      via: via(c),
     });
     return c.json({ ok: true, job });
   });
@@ -815,6 +863,7 @@ export function createApp(deps: Deps<any>) {
       jobId: idParam(c, "job"),
       note,
       hours: hours == null ? undefined : Number(hours),
+      via: via(c),
     });
     return c.json({ ok: true, job });
   });

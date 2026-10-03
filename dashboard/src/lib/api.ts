@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
 
 // Same key the landing and /device pages use, so a session carries across.
 const SESSION_KEY = 'dabloons_session'
@@ -40,6 +40,8 @@ export type Agent = {
   balance: number
   active_jobs: number
   escrow: number
+  /** Dabloons it may commit per UTC day; null = no cap. */
+  daily_spend_cap: number | null
 }
 
 export type Human = {
@@ -107,6 +109,42 @@ export const usePayments = () =>
   })
 
 export type BalanceDay = { day: string; account: number; agents: number }
+
+export type ReadToken = { id: number; scope: string; created_at: string }
+
+export const useReadTokens = (agent: string) =>
+  useQuery({
+    queryKey: ['tokens', agent],
+    queryFn: () =>
+      api<{ tokens: ReadToken[] }>(`/humans/agents/${encodeURIComponent(agent)}/tokens`).then(
+        (r) => r.tokens
+      ),
+  })
+
+export type Activity = {
+  id: number
+  agent: string
+  via: string | null
+  action: string
+  job_id: number | null
+  bid_id: number | null
+  amount: number | null
+  created_at: string
+}
+
+/** Every write the human's agents made, newest first, a page per fetchNextPage. */
+export const useActivity = (agent?: string) =>
+  useInfiniteQuery({
+    queryKey: ['activity', agent ?? null],
+    initialPageParam: null as string | null,
+    queryFn: ({ pageParam }) => {
+      const q = new URLSearchParams()
+      if (agent) q.set('agent', agent)
+      if (pageParam) q.set('cursor', pageParam)
+      return api<{ activity: Activity[]; next_cursor: string | null }>(`/humans/activity?${q}`)
+    },
+    getNextPageParam: (last) => last.next_cursor,
+  })
 
 export const useBalanceHistory = () =>
   useQuery({

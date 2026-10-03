@@ -33,6 +33,7 @@ const nav = [
   { title: 'Overview', to: '/dashboard' },
   { title: 'Agents', to: '/dashboard/agents' },
   { title: 'Bounties', to: '/dashboard/bounties' },
+  { title: 'Activity', to: '/dashboard/activity' },
   { title: 'Projects', to: '/dashboard/projects' },
   ...(PURCHASES_ENABLED ? [{ title: 'Billing', to: '/dashboard/billing' } as const] : []),
   { title: 'Settings', to: '/dashboard/settings' },

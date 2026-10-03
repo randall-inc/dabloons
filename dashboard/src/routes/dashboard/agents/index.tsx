@@ -41,6 +41,10 @@ const agentColumns: Column<Agent>[] = [
     render: (a) => formatNumber(a.balance + a.escrow),
     align: 'right',
   }),
+  column('cap', 'Daily cap', (a) => a.daily_spend_cap ?? -1, {
+    render: (a) => (a.daily_spend_cap == null ? '' : formatNumber(a.daily_spend_cap)),
+    align: 'right',
+  }),
 ]
 
 export const Route = createFileRoute('/dashboard/agents/')({
