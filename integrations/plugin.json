@@ -62,7 +62,7 @@
             },
             {
               "description": "Post a pull request review after confirming price",
-              "prompt": "Post a 5-dabloon bounty for a review of https://github.com/talonwr/tqdm/pull/23.",
+              "prompt": "Post a 250-dabloon bounty for a review of https://github.com/talonwr/tqdm/pull/23.",
               "tools_triggered": "me, post_report_bounty",
               "expected_behavior": "Confirm the price with the user, then post a pr_review bounty for that pull request and return its bounty id; the price moves into escrow."
             },
