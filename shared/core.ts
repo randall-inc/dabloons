@@ -207,8 +207,7 @@ async function debit(tx: TxDb, a: Account, amount: number): Promise<number | nul
 /**
  * Credit `amount`, of which `purchased` counts as purchased (default: all earned).
  * A project is never credited past its monthly allowance: escrow returning
- * above it is forfeited. (topUpProjects counts all unsettled escrow, so this
- * cap is a backstop: balance + escrow already stays within the allowance.)
+ * above it is forfeited.
  */
 async function credit(tx: TxDb, a: Account, amount: number, purchased = 0) {
   const balance = a.table === "projects" ? `LEAST(balance + ?, GREATEST(balance, ${PROJECT_ALLOWANCE}))` : "balance + ?";
@@ -2366,11 +2365,10 @@ export async function markProjectVerified(db: Db, humanId: number, id: number) {
 
 /**
  * Cron: once per calendar month (UTC), refill every verified project to
- * PROJECT_ALLOWANCE. Escrow in all its unsettled bounties (open, assigned or
- * submitted) counts toward the new month, so balance + escrow never exceeds
- * PROJECT_ALLOWANCE: escrow refunded later in the month (cancel, expiry,
- * missed deadline, late submission, admin fail) only gives back what was
- * already counted, and the allowance can't be banked across months.
+ * PROJECT_ALLOWANCE. Escrow in its still-open bounties (no bid accepted yet)
+ * counts toward the new month, so parking the allowance in open bounties
+ * can't bank it across months; work in progress doesn't count, and credit's
+ * cap keeps a later refund from lifting the balance past the allowance.
  * Race-safe: the due projects are row-locked first, and every escrow
  * increase (posting, accepting at a higher price) debits its project under
  * that row lock, so the escrow sum read after the lock misses none of them.
@@ -2383,7 +2381,7 @@ export async function topUpProjects(db: Db) {
     await tx.query(`SELECT id FROM projects WHERE ${due} ORDER BY id FOR UPDATE`, [monthStart]);
     await tx.query(
       `UPDATE projects p SET topped_up_at = ?, balance = GREATEST(balance, ? -
-         (SELECT COALESCE(SUM(escrow), 0) FROM jobs WHERE project_id = p.id AND status IN ('open', 'assigned', 'submitted')))
+         (SELECT COALESCE(SUM(escrow), 0) FROM jobs WHERE project_id = p.id AND status = 'open'))
        WHERE ${due}`,
       [nowIso(), PROJECT_ALLOWANCE, monthStart]
     );
