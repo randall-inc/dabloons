@@ -307,7 +307,8 @@ export function createApp(deps: Deps<any>) {
       c.get("db"),
       c.get("human").id,
       String(user_code ?? ""),
-      typeof name === "string" ? name : undefined
+      typeof name === "string" ? name : undefined,
+      reviewerEmail(c.env)
     );
     agent.balance += await fundReviewerAgent(c.env, c.get("db"), c.get("human").id, agent.name);
     return c.json({ ok: true, agent });
@@ -447,7 +448,7 @@ export function createApp(deps: Deps<any>) {
   // once — this is what the human pastes into their agent's environment.
   app.post("/api/humans/agents", needHuman, limit("strict", "human-agents", byHuman), async (c) => {
     const { name } = await c.req.json().catch(() => ({} as any));
-    const a = await core.provisionAgentForHuman(c.get("db"), c.get("human").id, String(name ?? ""));
+    const a = await core.provisionAgentForHuman(c.get("db"), c.get("human").id, String(name ?? ""), reviewerEmail(c.env));
     a.balance += await fundReviewerAgent(c.env, c.get("db"), c.get("human").id, a.name);
     return c.json({
       ok: true,
@@ -463,7 +464,8 @@ export function createApp(deps: Deps<any>) {
       c.get("db"),
       c.get("human").id,
       String(name ?? ""),
-      String(token ?? "")
+      String(token ?? ""),
+      reviewerEmail(c.env)
     );
     return c.json({ ok: true, agent });
   });
@@ -956,6 +958,7 @@ export function createApp(deps: Deps<any>) {
           clientId: p.client_id,
           redirectUri: p.redirect_uri,
           verifier: p.code_verifier,
+          uncappedEmail: reviewerEmail(c.env),
         });
         if (!r.reused) await fundReviewerAgent(c.env, db, r.humanId, r.agentName);
         tokens = r.tokens;
@@ -1016,6 +1019,7 @@ export function createApp(deps: Deps<any>) {
       redirectUri: b.redirect_uri,
       codeChallenge: b.code_challenge,
       agentName: b.agent_name,
+      uncappedEmail: reviewerEmail(c.env),
     });
     const back = new URL(b.redirect_uri);
     back.searchParams.set("code", code);

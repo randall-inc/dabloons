@@ -481,9 +481,14 @@ export const AGENTS_PER_HUMAN_CAP = 20;
  * per-human advisory lock held to the end of the transaction, so two
  * creations at once can't both pass at 19. Every way an agent joins a human
  * (device approval, dashboard creation, OAuth connect, claim) calls this in
- * the transaction that inserts or links it.
+ * the transaction that inserts or links it. The human whose email is
+ * `uncappedEmail` (the app-directory reviewer account) has no cap.
  */
-async function checkAgentCap(tx: TxDb, humanId: number) {
+async function checkAgentCap(tx: TxDb, humanId: number, uncappedEmail?: string | null) {
+  if (uncappedEmail) {
+    const [h] = await tx.query("SELECT email FROM humans WHERE id = ?", [humanId]);
+    if (String(h?.email ?? "").toLowerCase() === uncappedEmail) return;
+  }
   await tx.query("SELECT pg_advisory_xact_lock(hashtext(?))", [`agent-cap:${humanId}`]);
   const [r] = await tx.query("SELECT COUNT(*) AS n FROM agents WHERE human_id = ?", [humanId]);
   if (num(r.n) >= AGENTS_PER_HUMAN_CAP)
@@ -610,7 +615,7 @@ export async function oauthAgentFor(db: TxDb, humanId: number, clientId: string)
 /** The human approved a connector: a one-time code for it to redeem within 10 minutes, for a new agent or the one it reconnects. */
 export async function createOAuthCode(
   db: Db,
-  o: { humanId: number; clientId: string; redirectUri: string; codeChallenge: string; agentName: string }
+  o: { humanId: number; clientId: string; redirectUri: string; codeChallenge: string; agentName: string; uncappedEmail?: string | null }
 ) {
   const reused = await oauthAgentFor(db, o.humanId, o.clientId);
   const agentName = reused ?? o.agentName.trim();
@@ -619,7 +624,7 @@ export async function createOAuthCode(
     if ((await db.query("SELECT 1 FROM agents WHERE name = ?", [agentName])).length)
       throw new Error(`agent already exists: ${agentName}`);
     // Checked again, under the lock, when the code is redeemed.
-    await db.transaction((tx) => checkAgentCap(tx, o.humanId));
+    await db.transaction((tx) => checkAgentCap(tx, o.humanId, o.uncappedEmail));
   }
   if (!/^[A-Za-z0-9_-]{43}$/.test(o.codeChallenge)) throw new Error("invalid code_challenge (PKCE S256 required)");
   const code = newToken();
@@ -664,7 +669,10 @@ async function issueGrantTokens(tx: TxDb, grant: { id?: number; agentName: strin
 }
 
 /** Redeem a code once: checks client, redirect_uri and PKCE, creates the agent (or reuses this human's agent from the same client), issues tokens. Also returns the agent and its human. */
-export async function redeemOAuthCode(db: Db, o: { code: string; clientId: string; redirectUri: string; verifier: string }) {
+export async function redeemOAuthCode(
+  db: Db,
+  o: { code: string; clientId: string; redirectUri: string; verifier: string; uncappedEmail?: string | null }
+) {
   const hash = await hashToken(String(o.code ?? ""));
   return db.transaction(async (tx) => {
     const rows = await tx.query("SELECT * FROM oauth_codes WHERE code_hash = ? FOR UPDATE", [hash]);
@@ -686,7 +694,7 @@ export async function redeemOAuthCode(db: Db, o: { code: string; clientId: strin
     } else {
       try {
         checkAgentName(c.agent_name);
-        await checkAgentCap(tx, num(c.human_id));
+        await checkAgentCap(tx, num(c.human_id), o.uncappedEmail);
       } catch (e) {
         throw new OAuthError("invalid_grant", `${(e as Error).message} — connect again`);
       }
@@ -2115,13 +2123,13 @@ export async function fundHuman(db: Db, id: number, amount: number) {
  * A human provisions an agent under their account. The token is shown once —
  * this is what the human pastes into their agent's environment.
  */
-export async function provisionAgentForHuman(db: Db, humanId: number, name: string) {
+export async function provisionAgentForHuman(db: Db, humanId: number, name: string, uncappedEmail?: string | null) {
   name = name.trim();
   checkAgentName(name);
   const token = newToken();
   const tokenHash = await hashToken(token);
   return db.transaction(async (tx) => {
-    await checkAgentCap(tx, humanId);
+    await checkAgentCap(tx, humanId, uncappedEmail);
     if ((await tx.query("SELECT 1 FROM agents WHERE name = ?", [name])).length) throw new Error(`agent already exists: ${name}`);
     await tx.query("INSERT INTO agents (name, balance, api_token_hash, human_id, created_at) VALUES (?, 0, ?, ?, ?)", [
       name, tokenHash, humanId, nowIso(),
@@ -2134,7 +2142,7 @@ export async function provisionAgentForHuman(db: Db, humanId: number, name: stri
  * A human claims an agent that self-registered before sign-up required a
  * human, by proving control of its API token (Moltbook-style). After claiming, the human can fund and manage it.
  */
-export async function claimAgent(db: Db, humanId: number, agentName: string, agentToken: string) {
+export async function claimAgent(db: Db, humanId: number, agentName: string, agentToken: string, uncappedEmail?: string | null) {
   const tokenHash = await hashToken(agentToken);
   return db.transaction(async (tx) => {
     const rows = await tx.query("SELECT * FROM agents WHERE name = ? FOR UPDATE", [agentName]);
@@ -2144,7 +2152,7 @@ export async function claimAgent(db: Db, humanId: number, agentName: string, age
       throw new Error("agent token does not match — only the agent's owner can claim it");
     if (agent.human_id != null && num(agent.human_id) !== humanId)
       throw new Error("agent is already claimed by another human");
-    if (agent.human_id == null) await checkAgentCap(tx, humanId);
+    if (agent.human_id == null) await checkAgentCap(tx, humanId, uncappedEmail);
     await tx.query("UPDATE agents SET human_id = ? WHERE name = ?", [humanId, agentName]);
     return normAgent({ ...agent, human_id: humanId });
   });
@@ -2542,7 +2550,7 @@ export async function pollDeviceFlow(db: Db, deviceCode: string) {
  * agent. Name precedence: approve-time name > device-suggested name >
  * generated.
  */
-export async function approveDeviceFlow(db: Db, humanId: number, userCode: string, name?: string) {
+export async function approveDeviceFlow(db: Db, humanId: number, userCode: string, name?: string, uncappedEmail?: string | null) {
   const code = String(userCode ?? "").trim().toUpperCase();
   return db.transaction(async (tx) => {
     const rows = await tx.query(
@@ -2551,7 +2559,7 @@ export async function approveDeviceFlow(db: Db, humanId: number, userCode: strin
     );
     const flow = rows[0];
     if (!flow) throw new Error("unknown or expired code — check the code on your device and try again");
-    await checkAgentCap(tx, humanId);
+    await checkAgentCap(tx, humanId, uncappedEmail);
     const finalName = (name ?? "").trim() || flow.suggested_name || autoAgentName();
     checkAgentName(finalName);
     const taken = await tx.query("SELECT name FROM agents WHERE name = ?", [finalName]);
