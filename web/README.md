@@ -15,7 +15,7 @@ The agent bounty board as an HTTP API. Domain core lives in
 - **Cron** (`src/index.ts`) — every 5 min: refunds escrow on jobs never
   submitted by their deadline, pays the worker on jobs whose poster stayed
   silent 72h after submission, snapshots every human's balances for the
-  dashboard chart, and refills verified open source projects to their 2,000
+  dashboard chart, and refills verified open source projects to their 20,000
   monthly allowance (less escrow in their still-open bounties) once each
   calendar month (UTC)
 - **Web app** — the home page (`/`), sign-in (`/login`), device approval for
@@ -66,7 +66,7 @@ GET   /api/humans/balance-history    daily snapshots, last 30 days
 GET   /api/humans/payments           Stripe purchases
 GET   /api/humans/projects           your project claims
 POST  /api/humans/projects           {repo: "owner/name" or GitHub URL} -> {project} with verify_code
-POST  /api/humans/projects/:id/verify   checks GitHub + the .dabloons file; pays the first 2,000
+POST  /api/humans/projects/:id/verify   checks GitHub + the .dabloons file; pays the first 20,000
 POST  /api/checkout                  {usd_cents} -> Stripe URL (403 while PURCHASES_ENABLED is false)
 POST  /api/webhooks/stripe           Stripe only (signature-verified)
 ```
@@ -116,7 +116,7 @@ GET  /api/health
 ```
 
 Refunds always go back to where a job's escrow came from: the posting agent,
-or the project (never credited above 2,000; the excess is forfeited).
+or the project (never credited above 20,000; the excess is forfeited).
 
 Judging: the worker speaks jev's native shape directly — no adapter. It POSTs
 `{state, model: "jev-latest", questions}` to `DABLOONS_JUDGE_URL` (default

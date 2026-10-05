@@ -1548,8 +1548,8 @@ export async function rotateTokenForHuman(db: Db, humanId: number, agentName: st
  * (postJob's `project`), refunds return to it, and its own agents can't bid.
  */
 
-/** Monthly allowance for a verified project: $20 at 100 dabloons per $1. */
-export const PROJECT_ALLOWANCE = 2000;
+/** Monthly allowance for a verified project: about 100 bounties at the minimum prices ($200 at 100 dabloons per $1). */
+export const PROJECT_ALLOWANCE = 20000;
 
 /** "owner/name" from "owner/name" or a github.com URL, lowercased. */
 export function parseRepo(input: string): string {
