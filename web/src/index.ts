@@ -41,7 +41,9 @@ export default {
     try {
       await core.sweepExpired(db);
       await core.sweepSilentPosters(db);
-      await core.sweepIdleOpenJobs(db);
+      // The app-directory reviewers' bounties stay open: review-desk's, and any posted by the reviewer account's agents.
+      const reviewer = (env.REVIEWER_PASSWORD && env.REVIEWER_EMAIL?.trim().toLowerCase()) || null;
+      await core.sweepIdleOpenJobs(db, { poster: "review-desk", humanEmail: reviewer });
       await core.snapshotBalances(db);
       await core.topUpProjects(db);
       await core.cleanupExpiredAuth(db);

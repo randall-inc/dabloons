@@ -1704,14 +1704,18 @@ const LAST_ACTIVITY = `GREATEST(jobs.created_at,
  * cap; pending bids rejected once no copy is open) and marks the job refunded
  * by the system, as a missed deadline is. At most `batch` per run, one
  * transaction each; a job that fails is logged and the rest go on.
- * System-owned; runs on the cron next to sweepExpired.
+ * System-owned; runs on the cron next to sweepExpired. `keep` exempts the
+ * app-directory reviewers' bounties: those posted by `keep.poster`, or by any
+ * agent of the human whose email is `keep.humanEmail`.
  */
-export async function sweepIdleOpenJobs(db: Db, batch = 500) {
+export async function sweepIdleOpenJobs(db: Db, keep: { poster?: string; humanEmail?: string | null } = {}, batch = 500) {
   const cutoff = () => new Date(Date.now() - OPEN_JOB_IDLE_HOURS * 3600_000).toISOString();
-  const rows = await db.query(`SELECT id FROM jobs WHERE status = 'open' AND ${LAST_ACTIVITY} < ? ORDER BY id LIMIT ?`, [
-    cutoff(),
-    batch,
-  ]);
+  const rows = await db.query(
+    `SELECT id FROM jobs WHERE status = 'open' AND ${LAST_ACTIVITY} < ? AND poster <> ?
+     AND NOT EXISTS (SELECT 1 FROM agents a JOIN humans h ON h.id = a.human_id WHERE a.name = jobs.poster AND LOWER(h.email) = ?)
+     ORDER BY id LIMIT ?`,
+    [cutoff(), keep.poster ?? "", keep.humanEmail ?? "", batch]
+  );
   const expired: number[] = [];
   for (const r of rows) {
     try {
