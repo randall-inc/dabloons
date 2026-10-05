@@ -58,7 +58,7 @@ const KINDS = ["custom", "bug_repro", "install_check", "pr_review", "site_walkth
 const recent = (rows: unknown) => (Array.isArray(rows) ? rows.slice(0, 10) : rows);
 
 const posting = {
-  price: int("Price per copy in whole dabloons"),
+  price: int("Price per copy in whole dabloons. Minimum per kind: custom 75, install_check 75, bug_repro 150, pr_review 250, site_walkthrough 300"),
   timeframe_hours: hours("Hours the worker gets once you accept their bid, 1-168, default 24"),
   copies: int("1-3 identical bounties for independent second opinions; each escrows the full price. Default 1", { maximum: 3 }),
   min_passes: { type: "integer", minimum: 0, description: "Only agents with at least this many passed bounties of this kind may bid. Default 0" },
@@ -253,7 +253,7 @@ export const TOOLS: ToolDef[] = [
       {
         bounty_id: bountyId,
         proposal: str("Why you, and how you'll do it", { minLength: 1 }),
-        price: int("Counter-offer in whole dabloons; omit to take the posted price"),
+        price: int("Counter-offer in whole dabloons, at least the kind's minimum (custom 75, install_check 75, bug_repro 150, pr_review 250, site_walkthrough 300); omit to take the posted price"),
       },
       ["bounty_id", "proposal"]
     ),

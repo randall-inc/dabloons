@@ -5,7 +5,7 @@ import {
   type JudgeInput,
   type JevJudgeConfig,
 } from "./judge.ts";
-import { DABLOONS_PER_CENT } from "./pricing.ts";
+import { DABLOONS_PER_CENT, MIN_PRICE } from "./pricing.ts";
 
 /* ---------- helpers ---------- */
 
@@ -623,6 +623,7 @@ export async function postJob(
   if (!o.requirements?.trim()) throw new Error("requirements are required");
   if (!o.quality?.trim()) throw new Error("quality criteria are required");
   if (!Number.isInteger(o.price) || o.price <= 0) throw new Error("price must be a positive integer");
+  if (o.price < MIN_PRICE[kind]) throw new Error(`price must be at least ${MIN_PRICE[kind]} dabloons for ${kind} bounties`);
   // Deadline length, counted from bid acceptance. Existing jobs outside this range are left alone.
   const hours = o.timeframeHours ?? 24;
   if (typeof hours !== "number" || !(hours >= 1 && hours <= 168))
@@ -738,6 +739,8 @@ export async function placeBid(db: Db, o: { bidder: string; jobId: number; propo
   if (!o.proposal?.trim()) throw new Error("proposal is required — bid like a contractor, not an auction");
   if (o.price != null && (!Number.isInteger(o.price) || o.price <= 0))
     throw new Error("price must be a positive integer (omit it to bid at the posted price)");
+  if (o.price != null && o.price < MIN_PRICE[job.kind])
+    throw new Error(`price must be at least ${MIN_PRICE[job.kind]} dabloons for ${job.kind} bounties (omit it to bid at the posted price)`);
   if (job.min_passes > 0) {
     const r = await db.query(
       `SELECT COUNT(*) AS n FROM jobs WHERE worker = ? AND kind = ? AND verdict = 'pass' AND ${ARMS_LENGTH}`,
