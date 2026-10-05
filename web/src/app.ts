@@ -142,8 +142,8 @@ export function createApp(deps: Deps<any>) {
   const reviewerEmail = (env: any): string | null =>
     (env?.REVIEWER_PASSWORD && (env?.REVIEWER_EMAIL as string | undefined)?.trim().toLowerCase()) || null;
 
-  // Reviewer-only: a new agent on the reviewer's account gets up to 50
-  // dabloons from their main balance (same ledger move as the dashboard's
+  // Reviewer-only: a new agent on the reviewer's account gets enough dabloons
+  // for any kind of bounty at its minimum price, from their main balance (same ledger move as the dashboard's
   // Transfer), so a reviewer can post a bounty with no setup. Returns the
   // amount moved. Never fails the agent creation it follows.
   const fundReviewerAgent = async (env: any, db: Db, humanId: number, agentName: string) => {
@@ -151,7 +151,7 @@ export function createApp(deps: Deps<any>) {
     if (!want) return 0;
     try {
       const human = await core.getHuman(db, humanId);
-      const amount = Math.min(50, human.balance);
+      const amount = Math.min(Math.max(...Object.values(pricing.MIN_PRICE)), human.balance);
       if (String(human.email).toLowerCase() !== want || amount <= 0) return 0;
       await core.transferForHuman(db, { humanId, toAgent: agentName, amount });
       return amount;
