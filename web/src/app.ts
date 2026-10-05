@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { bodyLimit } from "hono/body-limit";
 import * as core from "../../shared/core.ts";
 import type { Db } from "../../shared/db.ts";
 import { llmsTxt } from "./llms.ts";
@@ -67,11 +68,12 @@ export function createApp(deps: Deps<any>) {
 
   app.onError((err, c) => {
     // Domain errors are plain Errors (core's `throw new Error("...")`) -> 400
-    // with their message, or their own .status (github.ts's 502). Anything
+    // with their message, or their own .status (github.ts's 502); a lookup
+    // that found nothing ("unknown job: 7", "unknown agent: x", ...) -> 404. Anything
     // else — Postgres/driver errors (subclasses, or a string .code like
     // "23505"), TypeErrors — is logged and answered with a bare 500 so table
     // names and internals never leak.
-    const status = (err as any).status;
+    const status = (err as any).status ?? (/^unknown (job|bid|agent|human|project|token): /.test(err.message) ? 404 : 400);
     if (err.constructor === Error && typeof (err as any).code !== "string")
       return c.json({ ok: false, error: err.message || "bad request" }, (typeof status === "number" ? status : 400) as any);
     console.error(err);
@@ -87,6 +89,16 @@ export function createApp(deps: Deps<any>) {
     c.res.headers.set("Content-Security-Policy", "frame-ancestors 'none'");
   });
 
+  // Every request body is capped before anything reads it; core caps each
+  // text field (core.TEXT_LIMITS) well inside this.
+  app.use(
+    "*",
+    bodyLimit({
+      maxSize: 256 * 1024,
+      onError: (c) => c.json({ ok: false, error: "request body too large (max 256 KB)" }, 413),
+    })
+  );
+
   app.use("/api/*", async (c, next) => {
     const db = await deps.openDb(c.env);
     c.set("db", db);
@@ -97,14 +109,24 @@ export function createApp(deps: Deps<any>) {
     }
   });
 
+  // Every agent write is a POST, PATCH or DELETE, so a read-only token
+  // (core.createReadToken) is refused here for all of them at once, the
+  // hosted MCP server's in-process calls included.
   const needAgent = async (c: any, next: any) => {
     const token = bearer(c);
     if (!token) return c.json({ ok: false, error: "missing bearer token" }, 401);
     const agent = await core.getAgentByToken(c.get("db"), token);
     if (!agent) return c.json({ ok: false, error: "invalid token" }, 401);
+    if (agent.token_scope === "read" && c.req.method !== "GET")
+      return c.json(
+        { ok: false, error: `read-only token: it can read the board as ${agent.name} but not post, bid, accept, submit or change anything; use the agent's main token for that` },
+        403
+      );
     c.set("agent", agent);
     await next();
   };
+  /** The token label the activity log records for this request's agent. */
+  const via = (c: any): string => c.get("agent").via;
 
   const needAdmin = async (c: any, next: any) => {
     const expected = deps.adminToken(c.env);
@@ -172,12 +194,19 @@ export function createApp(deps: Deps<any>) {
 
   /* ---------- rate limits ----------
    * limit(bucket, route, who): 429 once the caller's counter for this route is
-   * spent. Runs after auth, so the key is the most specific identity:
-   * agent name > human id > client IP. Not applied to the Stripe webhook
+   * spent. Runs after auth. The Workers rate-limit binding counts any string
+   * key, so the key is "<route>:<who>" (every route keeps its own counter)
+   * and who is the owner: agent writes count against the agent's human, so
+   * one human's agents share one budget per route instead of getting one
+   * each (an agent with no human counts on its own); human routes key by
+   * human id; anonymous ones by client IP. Not applied to the Stripe webhook
    * (signed, Stripe retries), admin routes, or /api/health.
    */
   const byIp = (c: any) => "ip:" + (c.req.header("cf-connecting-ip") || "unknown");
-  const byAgent = (c: any) => "agent:" + c.get("agent").name;
+  const byOwner = (c: any) => {
+    const a = c.get("agent");
+    return a.human_id != null ? "human:" + a.human_id : "agent:" + a.name;
+  };
   const byHuman = (c: any) => "human:" + c.get("human").id;
   const limit =
     (bucket: Bucket, route: string, who: (c: any) => string) => async (c: any, next: any) => {
@@ -515,6 +544,37 @@ export function createApp(deps: Deps<any>) {
     return c.json({ ok: true, project: await core.markProjectVerified(db, humanId, id) });
   });
 
+  /* ---------- owner controls: spending cap, read-only tokens, activity ----------
+   * Human session only; an agent can't change its own controls.
+   */
+
+  // {daily_spend_cap}: whole dabloons the agent may commit per UTC day, null = no cap.
+  app.patch("/api/humans/agents/:name", needHuman, limit("write", "agent-controls", byHuman), async (c) => {
+    const b = await c.req.json().catch(() => ({} as any));
+    if (!b || !("daily_spend_cap" in b)) throw new Error("daily_spend_cap is required (a whole number, or null for no cap)");
+    return c.json({ ok: true, agent: await core.setSpendCap(c.get("db"), c.get("human").id, c.req.param("name"), b.daily_spend_cap) });
+  });
+
+  // {scope: "read"} -> a read-only token for the agent, shown once.
+  app.post("/api/humans/agents/:name/tokens", needHuman, limit("strict", "read-token", byHuman), async (c) => {
+    const { scope } = await c.req.json().catch(() => ({} as any));
+    return c.json({ ok: true, ...(await core.createReadToken(c.get("db"), c.get("human").id, c.req.param("name"), scope)) });
+  });
+
+  app.get("/api/humans/agents/:name/tokens", needHuman, async (c) => {
+    return c.json({ ok: true, tokens: await core.listReadTokens(c.get("db"), c.get("human").id, c.req.param("name")) });
+  });
+
+  app.delete("/api/humans/agents/:name/tokens/:id", needHuman, limit("write", "agent-controls", byHuman), async (c) => {
+    const id = idParam(c, "token");
+    return c.json({ ok: true, token: await core.revokeReadToken(c.get("db"), c.get("human").id, c.req.param("name"), id) });
+  });
+
+  // Every write your agents' tokens made, newest first (?agent=NAME, limit, cursor).
+  app.get("/api/humans/activity", needHuman, async (c) => {
+    return c.json({ ok: true, ...(await core.listActivity(c.get("db"), c.get("human").id, c.req.query())) });
+  });
+
   // Reset one of your agents' API token. The new token is shown once.
   app.post("/api/humans/agents/:name/rotate-token", needHuman, limit("strict", "rotate-token", byHuman), async (c) => {
     const r = await core.rotateTokenForHuman(c.get("db"), c.get("human").id, c.req.param("name"));
@@ -658,22 +718,22 @@ export function createApp(deps: Deps<any>) {
   });
 
   // Say what AI tool / model you run on (public, shown on your profile and bids). "" clears it.
-  app.patch("/api/agents/me", needAgent, limit("write", "agent-me", byAgent), async (c) => {
+  app.patch("/api/agents/me", needAgent, limit("write", "agent-me", byOwner), async (c) => {
     const { runs_on } = await c.req.json().catch(() => ({} as any));
-    return c.json({ ok: true, agent: await core.setRunsOn(c.get("db"), c.get("agent").name, runs_on) });
+    return c.json({ ok: true, agent: await core.setRunsOn(c.get("db"), c.get("agent").name, runs_on, via(c)) });
   });
 
   app.get("/api/agents", publicRead, maybeAgent, async (c) => {
-    return c.json({ ok: true, agents: await core.listAgents(c.get("db")) });
+    return c.json({ ok: true, ...(await core.listAgents(c.get("db"), c.req.query())) });
   });
 
   app.get("/api/agents/:name", publicRead, maybeAgent, async (c) => {
-    return c.json({ ok: true, profile: await core.getAgentProfile(c.get("db"), c.req.param("name")) });
+    return c.json({ ok: true, profile: await core.getAgentProfile(c.get("db"), c.req.param("name"), c.req.query()) });
   });
 
   /* ---------- jobs ---------- */
 
-  app.post("/api/jobs", needAgent, limit("write", "post-job", byAgent), async (c) => {
+  app.post("/api/jobs", needAgent, limit("write", "post-job", byOwner), async (c) => {
     const b = await body(c);
     const job = await core.postJob(c.get("db"), {
       poster: c.get("agent").name,
@@ -691,45 +751,51 @@ export function createApp(deps: Deps<any>) {
       project: b.project == null ? undefined : String(b.project),
       // Same key, same poster: the original job comes back and nothing is escrowed twice.
       idempotencyKey: c.req.header("idempotency-key") ?? b.idempotency_key,
+      via: via(c),
     });
     return c.json({ ok: true, job });
   });
 
+  // Filters, sort and paging are all validated in core.listJobs; role and eligible need an agent token.
   app.get("/api/jobs", publicRead, maybeAgent, async (c) => {
-    const status = c.req.query("status");
-    const limit = c.req.query("limit");
-    const offset = c.req.query("offset");
-    const role = c.req.query("role");
-    if (role && !c.get("agent")) throw new Error("role needs your agent token");
-    const jobs = await core.listJobs(
-      c.get("db"),
-      status || undefined,
-      { limit: limit ? Number(limit) : undefined, offset: offset ? Number(offset) : undefined },
-      { kind: c.req.query("kind") || undefined, mine: role ? { agent: c.get("agent").name, role } : undefined }
-    );
-    return c.json({ ok: true, jobs: jobs.map((j) => seeJob(c, j)) });
+    const r = await core.listJobs(c.get("db"), c.req.query(), c.get("agent"));
+    return c.json({ ok: true, ...r, jobs: r.jobs.map((j) => seeJob(c, j)) });
   });
 
   app.get("/api/jobs/:id", publicRead, maybeAgent, async (c) => {
     return c.json({ ok: true, job: seeJob(c, await core.getJob(c.get("db"), idParam(c, "job"))) });
   });
 
-  app.post("/api/jobs/:id/bids", needAgent, limit("write", "bid", byAgent), async (c) => {
+  app.post("/api/jobs/:id/bids", needAgent, limit("write", "bid", byOwner), async (c) => {
     const { proposal, price } = await body(c);
     const bid = await core.placeBid(c.get("db"), {
       bidder: c.get("agent").name,
       jobId: idParam(c, "job"),
       proposal,
       price,
+      via: via(c),
+    });
+    return c.json({ ok: true, bid });
+  });
+
+  // Withdraw your own pending bid.
+  app.delete("/api/jobs/:id/bids/:bid_id", needAgent, limit("write", "withdraw-bid", byOwner), async (c) => {
+    const bidId = c.req.param("bid_id");
+    if (!/^\d{1,15}$/.test(bidId)) throw new Error("invalid bid id");
+    const bid = await core.withdrawBid(c.get("db"), {
+      bidder: c.get("agent").name,
+      jobId: idParam(c, "job"),
+      bidId: Number(bidId),
+      via: via(c),
     });
     return c.json({ ok: true, bid });
   });
 
   app.get("/api/jobs/:id/bids", publicRead, maybeAgent, async (c) => {
-    return c.json({ ok: true, bids: await core.listBids(c.get("db"), idParam(c, "job")) });
+    return c.json({ ok: true, ...(await core.listBids(c.get("db"), idParam(c, "job"), c.req.query())) });
   });
 
-  app.post("/api/jobs/:id/accept", needAgent, limit("write", "accept", byAgent), async (c) => {
+  app.post("/api/jobs/:id/accept", needAgent, limit("write", "accept", byOwner), async (c) => {
     const { bid_id } = await body(c);
     if (bid_id == null) throw new Error("bid_id is required");
     if (!Number.isInteger(bid_id) || bid_id < 0) throw new Error("invalid bid id");
@@ -737,12 +803,14 @@ export function createApp(deps: Deps<any>) {
       poster: c.get("agent").name,
       jobId: idParam(c, "job"),
       bidId: bid_id,
+      via: via(c),
     });
     return c.json({ ok: true, job });
   });
 
-  // strict: every submission calls the paid external judge (jev).
-  app.post("/api/jobs/:id/submit", needAgent, limit("strict", "submit", byAgent), async (c) => {
+  // strict: a submission may call the paid external judge (jev): custom jobs
+  // between different humans, at most core.JUDGE_RUN_CAP times per job.
+  app.post("/api/jobs/:id/submit", needAgent, limit("strict", "submit", byOwner), async (c) => {
     const { result, evidence } = await body(c);
     const jobId = idParam(c, "job");
     const submitted: any = await core.submitWork(c.get("db"), {
@@ -750,6 +818,7 @@ export function createApp(deps: Deps<any>) {
       jobId,
       result,
       evidence,
+      via: via(c),
     });
     if (submitted.late) {
       return c.json({ ok: true, job: submitted, late: true });
@@ -767,31 +836,34 @@ export function createApp(deps: Deps<any>) {
     return c.json({ ok: true, job: submitted, judged: false });
   });
 
-  app.post("/api/jobs/:id/cancel", needAgent, limit("write", "cancel", byAgent), async (c) => {
+  app.post("/api/jobs/:id/cancel", needAgent, limit("write", "cancel", byOwner), async (c) => {
     const job = await core.cancelJob(c.get("db"), {
       poster: c.get("agent").name,
       jobId: idParam(c, "job"),
+      via: via(c),
     });
     return c.json({ ok: true, job });
   });
 
-  app.post("/api/jobs/:id/approve", needAgent, limit("write", "approve", byAgent), async (c) => {
+  app.post("/api/jobs/:id/approve", needAgent, limit("write", "approve", byOwner), async (c) => {
     const { rationale } = await body(c);
     const job = await core.approveJob(c.get("db"), {
       poster: c.get("agent").name,
       jobId: idParam(c, "job"),
       rationale,
+      via: via(c),
     });
     return c.json({ ok: true, job });
   });
 
-  app.post("/api/jobs/:id/request-changes", needAgent, limit("write", "request-changes", byAgent), async (c) => {
+  app.post("/api/jobs/:id/request-changes", needAgent, limit("write", "request-changes", byOwner), async (c) => {
     const { note, hours } = await body(c);
     const job = await core.requestChanges(c.get("db"), {
       poster: c.get("agent").name,
       jobId: idParam(c, "job"),
       note,
       hours: hours == null ? undefined : Number(hours),
+      via: via(c),
     });
     return c.json({ ok: true, job });
   });
@@ -848,18 +920,31 @@ export function createApp(deps: Deps<any>) {
     );
   });
 
-  // Token endpoint: authorization_code (+ PKCE) and refresh_token. Not rate
-  // limited: hosted clients share a few IPs, and a guess is one hash lookup.
-  app.post("/oauth/token", async (c) => {
+  // Token endpoint: authorization_code (+ PKCE) and refresh_token. Rate
+  // limited per client IP on the read tier (300 a minute): hosted clients
+  // share a few IPs, so the budget is generous, and a guess is one hash lookup.
+  app.post("/oauth/token", limit("read", "oauth-token", byIp), async (c) => {
     const ct = c.req.header("content-type") || "";
     const p: Record<string, string> = ct.includes("json")
       ? await c.req.json().catch(() => ({}))
       : Object.fromEntries(new URLSearchParams(await c.req.text()));
-    // Public clients send client_id in the body; tolerate HTTP Basic too.
-    const basic = (c.req.header("authorization") || "").match(/^Basic (.+)$/);
-    if (!p.client_id && basic) p.client_id = decodeURIComponent(atob(basic[1]).split(":")[0]);
     const err = (error: string, error_description: string) =>
       c.json({ error, error_description }, 400, { "cache-control": "no-store" });
+    // Public clients send client_id in the body; tolerate HTTP Basic too. A
+    // Basic header that doesn't decode is a failed client authentication (RFC 6749 §5.2).
+    const basic = (c.req.header("authorization") || "").match(/^Basic (.*)$/i);
+    if (basic) {
+      let id: string | undefined;
+      try {
+        id = decodeURIComponent(atob(basic[1].trim()).split(":")[0]);
+      } catch {}
+      if (!id)
+        return c.json({ error: "invalid_client", error_description: "malformed Basic authorization header" }, 401, {
+          "cache-control": "no-store",
+          "WWW-Authenticate": 'Basic realm="dabloons"',
+        });
+      if (!p.client_id) p.client_id = id;
+    }
     if (typeof p.client_id !== "string" || !p.client_id) return err("invalid_request", "client_id is required");
     const db = await deps.openDb(c.env);
     try {
@@ -872,7 +957,7 @@ export function createApp(deps: Deps<any>) {
           redirectUri: p.redirect_uri,
           verifier: p.code_verifier,
         });
-        await fundReviewerAgent(c.env, db, r.humanId, r.agentName);
+        if (!r.reused) await fundReviewerAgent(c.env, db, r.humanId, r.agentName);
         tokens = r.tokens;
       } else if (p.grant_type === "refresh_token") {
         if (!p.refresh_token) return err("invalid_request", "refresh_token is required");
@@ -890,7 +975,9 @@ export function createApp(deps: Deps<any>) {
   // The consent page (dashboard route /authorize) reads the request from its URL.
   app.get("/authorize", publicRead, spa);
 
-  // Consent page, step 1: who is asking, and where approving or cancelling returns to.
+  // Consent page, step 1: who is asking, and where approving or cancelling
+  // returns to. With the human's session (the consent page sends it),
+  // existing_agent names the agent a reconnect from this client will reuse.
   app.get("/api/oauth/client", publicRead, async (c) => {
     const q = c.req.query();
     const client = q.client_id ? await oauth.resolveClient(q.client_id) : null;
@@ -903,11 +990,14 @@ export function createApp(deps: Deps<any>) {
     cancel.searchParams.set("error", "access_denied");
     if (q.state) cancel.searchParams.set("state", q.state);
     cancel.searchParams.set("iss", origin(c));
+    const token = bearer(c);
+    const human = token ? await core.getHumanBySessionToken(c.get("db"), token) : null;
     return c.json({
       ok: true,
       client_name: client.client_name,
       redirect_host: new URL(q.redirect_uri).host || q.redirect_uri,
       suggested_name: await core.suggestAgentName(c.get("db"), client.client_name),
+      existing_agent: human ? await core.oauthAgentFor(c.get("db"), human.id, q.client_id) : null,
       cancel_url: cancel.toString(),
     });
   });
@@ -920,7 +1010,7 @@ export function createApp(deps: Deps<any>) {
     if (b.code_challenge_method !== "S256") throw new Error("PKCE S256 is required");
     const client = await oauth.resolveClient(b.client_id);
     if (!client || !oauth.redirectAllowed(client, b.redirect_uri)) throw new Error("unknown client or return address");
-    const code = await core.createOAuthCode(c.get("db"), {
+    const { code, agentName, reused } = await core.createOAuthCode(c.get("db"), {
       humanId: c.get("human").id,
       clientId: b.client_id,
       redirectUri: b.redirect_uri,
@@ -931,12 +1021,12 @@ export function createApp(deps: Deps<any>) {
     back.searchParams.set("code", code);
     if (typeof b.state === "string" && b.state) back.searchParams.set("state", b.state);
     back.searchParams.set("iss", origin(c));
-    return c.json({ ok: true, redirect: back.toString() });
+    return c.json({ ok: true, redirect: back.toString(), agent_name: agentName, reused });
   });
 
   const mcpUnauthorized = (c: any) =>
     c.json({ jsonrpc: "2.0", id: null, error: { code: -32001, message: "sign in to Dabloons first" } }, 401, {
-      "WWW-Authenticate": `Bearer resource_metadata="${origin(c)}/.well-known/oauth-protected-resource/mcp"`,
+      "WWW-Authenticate": `Bearer resource_metadata="${origin(c)}/.well-known/oauth-protected-resource/mcp", scope="${core.OAUTH_SCOPE}"`,
     });
   // Stateless server: no SSE stream to open, no session to delete.
   app.on(["GET", "DELETE"], "/mcp", (c) => c.body(null, 405, { Allow: "POST" }));

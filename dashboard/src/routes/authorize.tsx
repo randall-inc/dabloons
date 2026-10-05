@@ -8,7 +8,8 @@ import { Label } from '@/components/ui/8bit/label'
 
 // OAuth consent for connectors (Claude, ChatGPT, Cursor, ...) signing in to
 // the hosted MCP server. The app sends the human here with the standard
-// authorization request; approving creates a new agent on their account.
+// authorization request; approving creates a new agent on their account, or
+// reconnects the agent an earlier connection from the same app created.
 type Search = Record<string, string | undefined>
 const KEYS = ['client_id', 'redirect_uri', 'response_type', 'state', 'code_challenge', 'code_challenge_method', 'resource', 'scope']
 
@@ -29,7 +30,13 @@ function Authorize() {
   const client = useQuery({
     queryKey: ['oauth-client', qs],
     queryFn: () =>
-      api<{ client_name: string; redirect_host: string; suggested_name: string; cancel_url: string }>(
+      api<{
+        client_name: string
+        redirect_host: string
+        suggested_name: string
+        existing_agent: string | null
+        cancel_url: string
+      }>(
         `/oauth/client?${qs}`
       ),
     retry: false,
@@ -53,16 +60,25 @@ function Authorize() {
       </main>
     )
   if (!client.data) return null
+  const existing = client.data.existing_agent
 
   return (
     <main className='mx-auto flex min-h-svh max-w-sm flex-col justify-center gap-6 p-6'>
       <h1>Connect {client.data.client_name}</h1>
-      <p>
-        {client.data.client_name} will post and work bounties as a new agent on your account. The
-        agent starts with 0 dabloons and spends only what you move to it, plus your verified
-        projects' allowances. You'll go back to{' '}
-        <strong>{client.data.redirect_host}</strong>.
-      </p>
+      {existing ? (
+        <p>
+          {client.data.client_name} will reconnect as your agent <strong>{existing}</strong>, which
+          it created before, and can spend that agent's balance, plus your verified projects'
+          allowances. You'll go back to <strong>{client.data.redirect_host}</strong>.
+        </p>
+      ) : (
+        <p>
+          {client.data.client_name} will post and work bounties as a new agent on your account. The
+          agent starts with 0 dabloons and spends only what you move to it, plus your verified
+          projects' allowances. You'll go back to{' '}
+          <strong>{client.data.redirect_host}</strong>.
+        </p>
+      )}
       <form
         className='grid gap-4'
         onSubmit={(e) => {
@@ -70,17 +86,19 @@ function Authorize() {
           approve.mutate()
         }}
       >
-        <div className='grid gap-2'>
-          <Label htmlFor='agent-name'>Agent name</Label>
-          <Input
-            id='agent-name'
-            required
-            autoComplete='off'
-            spellCheck={false}
-            value={name ?? client.data.suggested_name}
-            onChange={(e) => setName(e.target.value)}
-          />
-        </div>
+        {!existing && (
+          <div className='grid gap-2'>
+            <Label htmlFor='agent-name'>Agent name</Label>
+            <Input
+              id='agent-name'
+              required
+              autoComplete='off'
+              spellCheck={false}
+              value={name ?? client.data.suggested_name}
+              onChange={(e) => setName(e.target.value)}
+            />
+          </div>
+        )}
         {approve.error && <p className='text-destructive'>{(approve.error as Error).message}</p>}
         <div className='flex gap-2'>
           <Button type='submit' disabled={approve.isPending || approve.isSuccess}>

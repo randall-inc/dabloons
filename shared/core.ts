@@ -13,6 +13,66 @@ const nowIso = () => new Date().toISOString();
 const num = (v: any): number => Number(v);
 const iso = (v: any): string | null => (v == null ? null : new Date(v).toISOString());
 
+type Query = Record<string, string | undefined>;
+
+/** A whole-number query parameter from min to max, or undefined when absent; `what` ends the error. */
+function intParam(q: Query, k: string, min: number, max: number, what: string): number | undefined {
+  if (q[k] == null || q[k] === "") return undefined;
+  const n = Number(q[k]);
+  if (!Number.isInteger(n) || n < min || n > max) throw new Error(`${k} must be a whole number${what}`);
+  return n;
+}
+
+/** true/false (or 1/0) query parameter; absent = false. */
+function boolParam(q: Query, k: string): boolean {
+  const v = q[k];
+  if (v == null || v === "" || v === "false" || v === "0") return false;
+  if (v === "true" || v === "1") return true;
+  throw new Error(`${k} must be true or false`);
+}
+
+/** Longest each free-text field may be, in characters (after trimming). runs_on has its own 80 (setRunsOn). */
+export const TEXT_LIMITS = {
+  title: 200, requirements: 8000, quality: 2000, notes: 2000, goal: 500, target: 2000,
+  proposal: 2000, result: 20000, evidence: 20000, note: 8000, rationale: 2000,
+};
+
+/** A 400 naming the field and its limit when text `s` is longer than TEXT_LIMITS allows. Non-text is left to the caller. */
+function capText(field: keyof typeof TEXT_LIMITS, s: unknown) {
+  const max = TEXT_LIMITS[field];
+  if (typeof s === "string" && s.trim().length > max)
+    throw new Error(`${field} is too long: ${s.trim().length.toLocaleString("en-US")} characters, max ${max.toLocaleString("en-US")}`);
+}
+
+/* ---------- keyset paging ----------
+ * A list page is up to `limit` rows plus has_more and next_cursor: an opaque
+ * token holding the list's sort and the last row's sort key. The next page
+ * starts strictly after that row, so rows added or settled in between never
+ * shift a page or show twice (OFFSET paging did both).
+ */
+
+const LIMIT = (q: Query) => intParam(q, "limit", 1, 200, " from 1 to 200 (default 50)") ?? 50;
+const toCursor = (...v: unknown[]) => btoa(JSON.stringify(v)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+
+/** The sort-key values in cursor `raw`, checked by `ok`; null when absent. A cursor from another list or sort is a 400. */
+function fromCursor(raw: string | undefined, sort: string, ok: (...v: any[]) => boolean): any[] | null {
+  if (raw == null || raw === "") return null;
+  try {
+    const [s, ...v] = JSON.parse(atob(raw.replace(/-/g, "+").replace(/_/g, "/")));
+    if (s === sort && ok(...v)) return v;
+  } catch {}
+  throw new Error("invalid cursor: pass next_cursor from the previous page unchanged, with the same sort");
+}
+
+/** Rows fetched with LIMIT limit + 1 -> one page; key(last row) is what the next page starts after. */
+function page(rows: any[], limit: number, sort: string, key: (r: any) => unknown[]) {
+  const items = rows.slice(0, limit);
+  const has_more = rows.length > limit;
+  return { items, has_more, next_cursor: has_more ? toCursor(sort, ...key(items[items.length - 1])) : null };
+}
+
+const isId = (v: unknown) => Number.isSafeInteger(v);
+
 function normJob(j: any) {
   // escrow_purchased is internal bookkeeping: public job views show one escrow total.
   const { escrow_purchased, ...rest } = j;
@@ -30,6 +90,8 @@ function normJob(j: any) {
     deadline: iso(j.deadline),
     submitted_at: iso(j.submitted_at),
     created_at: iso(j.created_at),
+    updated_at: iso(j.updated_at),
+    bid_count: j.bid_count == null ? undefined : num(j.bid_count),
   };
 }
 
@@ -40,32 +102,44 @@ function normJob(j: any) {
 const PUBLIC_JOB_FIELDS = [
   "id", "poster", "kind", "target", "title", "requirements", "quality", "price", "timeframe_hours", "status",
   "escrow", "accepted_bid", "worker", "deadline", "submitted_at", "verdict", "verdict_by", "created_at",
-  "group_id", "group_job_ids", "min_passes",
+  "group_id", "group_job_ids", "min_passes", "updated_at", "bid_count",
 ];
 export const publicJob = (j: any) => Object.fromEntries(PUBLIC_JOB_FIELDS.map((k) => [k, j[k] ?? null]));
 
-// price: the bid's counter-offer, or null for "at the posted price".
-const normBid = (b: any) => ({
+// price: the bid's counter-offer, or null for "at the posted price". job_group is internal (the one-bid-per-job key).
+const normBid = ({ job_group, ...b }: any) => ({
   ...b,
   id: num(b.id),
   job_id: num(b.job_id),
   price: b.price == null ? null : num(b.price),
 });
 
-/** Job columns for show/list: every column plus the ids of all copies in its group. */
+/** Pending bids on the job's whole group of copies (bids.job_group; the one-bid-per-agent index covers it). */
+const BID_COUNT =
+  "(SELECT COUNT(*) FROM bids b WHERE b.job_group = COALESCE(jobs.group_id, jobs.id) AND b.status = 'pending') AS bid_count";
+
+/** Job columns for show/list: every column plus the ids of all copies in its group and the pending bid count. */
 const JOB_COLS =
-  "*, (SELECT array_agg(g.id ORDER BY g.id) FROM jobs g WHERE g.group_id = jobs.group_id) AS group_job_ids";
+  `*, (SELECT array_agg(g.id ORDER BY g.id) FROM jobs g WHERE g.group_id = jobs.group_id) AS group_job_ids, ${BID_COUNT}`;
 
 function normAgent(a: any) {
   // purchased_balance stays internal: public profiles show one balance total.
-  const { api_token_hash, purchased_balance, ...rest } = a;
+  const { api_token_hash, purchased_balance, oauth_client_id, api_token_kind, ...rest } = a;
   return {
     ...rest,
     balance: num(a.balance),
     human_id: a.human_id == null ? null : num(a.human_id),
+    ...("daily_spend_cap" in a ? { daily_spend_cap: a.daily_spend_cap == null ? null : num(a.daily_spend_cap) } : {}),
     created_at: iso(a.created_at),
   };
 }
+
+// What anyone can see of an agent: an allow-list, like publicJob, so a column
+// added later stays private. human_id is the owning human account's number
+// (public on purpose: it shows which agents share an owner); nothing else
+// about the human (email, handle, balance) is ever public.
+const PUBLIC_AGENT_FIELDS = ["name", "balance", "runs_on", "human_id", "created_at"];
+const publicAgent = (a: any) => Object.fromEntries(PUBLIC_AGENT_FIELDS.map((k) => [k, a[k] ?? null]));
 
 function normHuman(h: any) {
   return {
@@ -90,6 +164,10 @@ async function lockJob(tx: TxDb, id: number) {
   // Settlement paths need the purchased part of the escrow; normJob hides it from views.
   return { ...normJob(rows[0]), escrow_purchased: num(rows[0].escrow_purchased) };
 }
+
+/** Lock a job and every copy of it, in id order, so accepts, cancels and expiry on one group serialize. */
+const lockGroup = (tx: TxDb, id: number) =>
+  tx.query("SELECT id FROM jobs WHERE id = ? OR group_id = (SELECT group_id FROM jobs WHERE id = ?) ORDER BY id FOR UPDATE", [id, id]);
 
 /* ---------- purchased vs earned ----------
  * balance is the total; purchased_balance is the part bought through Stripe
@@ -129,8 +207,8 @@ async function debit(tx: TxDb, a: Account, amount: number): Promise<number | nul
 /**
  * Credit `amount`, of which `purchased` counts as purchased (default: all earned).
  * A project is never credited past its monthly allowance: escrow returning
- * above it is forfeited, so parking the allowance in a job over a monthly
- * top-up and cancelling can't pile it up.
+ * above it is forfeited. (topUpProjects counts all unsettled escrow, so this
+ * cap is a backstop: balance + escrow already stays within the allowance.)
  */
 async function credit(tx: TxDb, a: Account, amount: number, purchased = 0) {
   const balance = a.table === "projects" ? `LEAST(balance + ?, GREATEST(balance, ${PROJECT_ALLOWANCE}))` : "balance + ?";
@@ -156,6 +234,35 @@ async function checkProjectWorker(db: TxDb, agent: any, job: any) {
   if (rows.length) throw new Error("you can't bid on a bounty funded by your own project");
 }
 
+/** Most jobs one human's agents together (or one agent with no human) may work at a time. */
+export const ACTIVE_JOB_CAP = 10;
+
+/**
+ * Throws once the agent's human (an agent with no human: the agent itself)
+ * already works ACTIVE_JOB_CAP assigned jobs, change requests included.
+ * Submitted jobs don't count: the work is delivered. Checked at bid and, under
+ * acceptBid's lock, at accept.
+ */
+async function checkActiveCap(db: TxDb, agent: any) {
+  const own = agent.human_id == null;
+  const n = await activeJobCount(db, agent);
+  if (n >= ACTIVE_JOB_CAP)
+    throw new Error(
+      `active job cap reached: ${own ? agent.name : `${agent.name}'s human`} already works ${n} assigned jobs` +
+        `${own ? "" : " across their agents"} (cap ${ACTIVE_JOB_CAP} at a time); submit work on one before taking another`
+    );
+}
+
+/** Assigned jobs of the agent's human's agents (an agent with no human: its own). */
+async function activeJobCount(db: TxDb, agent: { name: string; human_id: number | null }) {
+  const own = agent.human_id == null;
+  const r = await db.query(
+    `SELECT COUNT(*) AS n FROM jobs WHERE status = 'assigned' AND ${own ? "worker = ?" : "worker IN (SELECT name FROM agents WHERE human_id = ?)"}`,
+    [own ? agent.name : num(agent.human_id)]
+  );
+  return num(r[0].n);
+}
+
 /**
  * SQL condition on `jobs`: the job counts toward its worker's track record
  * (min_passes and reputation.by_kind). Not when the poster is the worker or
@@ -164,6 +271,46 @@ async function checkProjectWorker(db: TxDb, agent: any, job: any) {
  */
 const ARMS_LENGTH =
   "NOT EXISTS (SELECT 1 FROM agents p JOIN agents w ON w.name = jobs.worker WHERE p.name = jobs.poster AND (p.name = w.name OR p.human_id = w.human_id))";
+
+/**
+ * SQL aggregates over `jobs` for one worker's quality signals (with
+ * ARMS_LENGTH in the WHERE, like the rest of the track record):
+ * settled = pass or fail verdicts (admin fails, late and missed-deadline
+ * refunds included), first_try_passes = passes that never got a change
+ * request; submitted = jobs it submitted at least once, changes_requested =
+ * of those, ones that got 1+ change requests; on_time = submitted before the
+ * deadline (status anything but refunded), late = refunded for a late
+ * submission or a missed deadline (the only refunds a job with a worker gets).
+ */
+const QUALITY_COUNTS = `COUNT(*) FILTER (WHERE verdict IN ('pass', 'fail')) AS settled,
+  COUNT(*) FILTER (WHERE verdict = 'pass' AND change_requests = 0) AS first_try_passes,
+  COUNT(*) FILTER (WHERE submitted_at IS NOT NULL) AS submitted,
+  COUNT(*) FILTER (WHERE change_requests > 0) AS changes_requested,
+  COUNT(*) FILTER (WHERE submitted_at IS NOT NULL AND status <> 'refunded') AS on_time,
+  COUNT(*) FILTER (WHERE status = 'refunded') AS late`;
+
+/** QUALITY_COUNTS row (or nothing) -> the rates (null with nothing to count) and the counts they come from. */
+function quality(r: any = {}) {
+  const [settled, first_try_passes, submitted, changes_requested, on_time, late] = [
+    "settled", "first_try_passes", "submitted", "changes_requested", "on_time", "late",
+  ].map((k) => num(r[k] ?? 0));
+  const rate = (a: number, b: number) => (b ? Math.round((a / b) * 1000) / 1000 : null);
+  return {
+    first_try_pass_rate: rate(first_try_passes, settled),
+    change_request_rate: rate(changes_requested, submitted),
+    on_time_rate: rate(on_time, on_time + late),
+    settled, first_try_passes, submitted, changes_requested, on_time, late,
+  };
+}
+
+/** An agent's passed jobs per kind, at arm's length: what min_passes counts. */
+async function passesByKind(db: TxDb, name: string): Promise<Record<string, number>> {
+  const rows = await db.query(
+    `SELECT kind, COUNT(*) AS n FROM jobs WHERE worker = ? AND verdict = 'pass' AND ${ARMS_LENGTH} GROUP BY kind`,
+    [name]
+  );
+  return Object.fromEntries(rows.map((r: any) => [r.kind, num(r.n)]));
+}
 
 async function mustAgent(db: TxDb, name: string) {
   const rows = await db.query("SELECT * FROM agents WHERE name = ?", [name]);
@@ -181,6 +328,140 @@ export function newToken(): string {
   return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+/* ---------- owner controls: activity log, daily spending cap ----------
+ * Every write an agent token makes adds one agent_activity row, inside the
+ * write's own transaction: who (the agent, its human, and `via`, the token
+ * label from getAgentByToken), what (action, job and bid ids, amount) and
+ * when. Only the agent's human reads it (listActivity); the cron deletes
+ * rows past ACTIVITY_RETENTION_DAYS. amount per action: post = dabloons
+ * escrowed (all copies), accept = escrow added for a higher counter-offer
+ * (negative when a lower one refunded some, 0 at the posted price), bid =
+ * the counter-offer (null at the posted price), approve = paid to the worker,
+ * cancel = refunded; null for the rest.
+ */
+
+export const ACTIVITY_RETENTION_DAYS = 90;
+
+async function logActivity(
+  tx: TxDb,
+  a: { agent: string; via?: string; action: string; jobId?: number | null; bidId?: number | null; amount?: number | null }
+) {
+  await tx.query(
+    `INSERT INTO agent_activity (human_id, agent, via, action, job_id, bid_id, amount)
+     SELECT human_id, name, ?, ?, ?, ?, ? FROM agents WHERE name = ?`,
+    [a.via ?? null, a.action, a.jobId ?? null, a.bidId ?? null, a.amount ?? null, a.agent]
+  );
+}
+
+/**
+ * Refuse a commitment of `amount` past the agent's daily_spend_cap (set by
+ * its human; null = none): today's (UTC) post and accept rows in the
+ * activity log with a positive amount, plus this one. Row-locks the agent
+ * first, so two posts or accepts by one agent at once can't both fit under
+ * the cap. Called in the post and accept transactions before the debit
+ * (which locks the same agent row, or after it the project's).
+ */
+async function checkSpendCap(tx: TxDb, agent: string, amount: number) {
+  const [a] = await tx.query("SELECT daily_spend_cap FROM agents WHERE name = ? FOR UPDATE", [agent]);
+  if (a?.daily_spend_cap == null) return;
+  const d = new Date();
+  const day = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())).toISOString();
+  const [r] = await tx.query(
+    "SELECT COALESCE(SUM(amount), 0) AS n FROM agent_activity WHERE agent = ? AND created_at >= ? AND action IN ('post', 'accept') AND amount > 0",
+    [agent, day]
+  );
+  const cap = num(a.daily_spend_cap);
+  const spent = num(r.n);
+  if (spent + amount > cap)
+    throw new Error(
+      `daily spending cap reached: ${agent}'s human lets it commit ${cap} dabloons per UTC day (posting escrow plus the extra on higher counter-offers); ` +
+        `it has committed ${spent} today and this needs ${amount}. Try again after 00:00 UTC, or ask your human to raise the cap`
+    );
+}
+
+/** The owner sets (or, with null, clears) an agent's daily spending cap in whole dabloons. Agents can't change their own. */
+export async function setSpendCap(db: Db, humanId: number, agentName: string, cap: unknown) {
+  if (cap !== null && (!Number.isSafeInteger(cap) || (cap as number) < 0))
+    throw new Error("daily_spend_cap must be a whole number of dabloons, 0 or more, or null for no cap");
+  await mustOwnAgent(db, humanId, agentName);
+  await db.query("UPDATE agents SET daily_spend_cap = ? WHERE name = ?", [cap, agentName]);
+  return { name: agentName, daily_spend_cap: cap as number | null };
+}
+
+/** A human's agents' activity, newest first, a page at a time (q: agent, limit, cursor). */
+export async function listActivity(db: TxDb, humanId: number, q: Query = {}) {
+  const limit = LIMIT(q);
+  const before = fromCursor(q.cursor, "activity", isId);
+  if (q.agent) await mustOwnAgent(db, humanId, q.agent);
+  const rows = await db.query(
+    `SELECT id, agent, via, action, job_id, bid_id, amount, created_at FROM agent_activity
+     WHERE human_id = ? ${q.agent ? "AND agent = ?" : ""} ${before ? "AND id < ?" : ""} ORDER BY id DESC LIMIT ?`,
+    [humanId, ...(q.agent ? [q.agent] : []), ...(before ?? []), limit + 1]
+  );
+  const { items, ...rest } = page(rows, limit, "activity", (r) => [num(r.id)]);
+  const n = (v: any) => (v == null ? null : num(v));
+  return {
+    activity: items.map((r: any) => ({ ...r, id: num(r.id), job_id: n(r.job_id), bid_id: n(r.bid_id), amount: n(r.amount), created_at: iso(r.created_at) })),
+    ...rest,
+  };
+}
+
+/**
+ * Cron: delete activity older than ACTIVITY_RETENTION_DAYS. Rows are
+ * appended in id order, so it walks the primary key up to the first row
+ * still inside the window (cheap when nothing is due) and deletes below it.
+ */
+export async function cleanupActivity(db: Db) {
+  const cutoff = new Date(Date.now() - ACTIVITY_RETENTION_DAYS * 86400_000).toISOString();
+  await db.query(
+    `DELETE FROM agent_activity WHERE created_at < ?
+       AND id < COALESCE((SELECT id FROM agent_activity WHERE created_at >= ? ORDER BY id LIMIT 1), 9223372036854775807)`,
+    [cutoff, cutoff]
+  );
+}
+
+/* ---------- read-only tokens ----------
+ * An owner can mint extra read-only tokens for an agent: every read route
+ * works with one, every write is refused (403, web/src/app.ts needAgent),
+ * including through the hosted MCP server, which calls the same routes.
+ * Hash-only like the main token (unique index on token_hash), shown once,
+ * revocable; rotating the main token leaves them alone.
+ */
+
+const READ_TOKENS_PER_AGENT = 10;
+
+export async function createReadToken(db: Db, humanId: number, agentName: string, scope: unknown) {
+  if (scope !== "read") throw new Error('scope must be "read": extra tokens are read-only (rotate-token replaces the main one)');
+  const token = newToken();
+  const hash = await hashToken(token);
+  return db.transaction(async (tx) => {
+    await mustOwnAgent(tx, humanId, agentName);
+    // The agent's row lock serializes concurrent mints, so the count can't overshoot.
+    await tx.query("SELECT 1 FROM agents WHERE name = ? FOR UPDATE", [agentName]);
+    const [c] = await tx.query("SELECT COUNT(*) AS n FROM agent_tokens WHERE agent_name = ?", [agentName]);
+    if (num(c.n) >= READ_TOKENS_PER_AGENT)
+      throw new Error(`${agentName} already has ${READ_TOKENS_PER_AGENT} read-only tokens; revoke one first`);
+    const [t] = await tx.query(
+      "INSERT INTO agent_tokens (agent_name, token_hash, scope) VALUES (?, ?, 'read') RETURNING id, scope, created_at",
+      [agentName, hash]
+    );
+    return { id: num(t.id), scope: t.scope as string, created_at: iso(t.created_at), token };
+  });
+}
+
+export async function listReadTokens(db: TxDb, humanId: number, agentName: string) {
+  await mustOwnAgent(db, humanId, agentName);
+  const rows = await db.query("SELECT id, scope, created_at FROM agent_tokens WHERE agent_name = ? ORDER BY id", [agentName]);
+  return rows.map((r: any) => ({ id: num(r.id), scope: r.scope as string, created_at: iso(r.created_at) }));
+}
+
+export async function revokeReadToken(db: Db, humanId: number, agentName: string, id: number) {
+  await mustOwnAgent(db, humanId, agentName);
+  const rows = await db.query("DELETE FROM agent_tokens WHERE id = ? AND agent_name = ? RETURNING id", [id, agentName]);
+  if (!rows.length) throw new Error(`unknown token: ${id}`);
+  return { id };
+}
+
 /* ---------- agents ---------- */
 
 /** Names the board itself records verdicts under; no human or agent may take them. */
@@ -190,6 +471,25 @@ const RESERVED_AGENT_NAMES = ["system", "jev"];
 function checkAgentName(name: string) {
   if (!/^[a-zA-Z0-9_-]{1,64}$/.test(name)) throw new Error("agent name must be 1-64 chars: letters, digits, _ or -");
   if (RESERVED_AGENT_NAMES.includes(name.toLowerCase())) throw new Error(`agent name "${name}" is reserved — pick another`);
+}
+
+/** Most agents one human account may have. Admin-provisioned agents have no human and don't count. */
+export const AGENTS_PER_HUMAN_CAP = 20;
+
+/**
+ * Throws once the human already has AGENTS_PER_HUMAN_CAP agents. Takes a
+ * per-human advisory lock held to the end of the transaction, so two
+ * creations at once can't both pass at 19. Every way an agent joins a human
+ * (device approval, dashboard creation, OAuth connect, claim) calls this in
+ * the transaction that inserts or links it.
+ */
+async function checkAgentCap(tx: TxDb, humanId: number) {
+  await tx.query("SELECT pg_advisory_xact_lock(hashtext(?))", [`agent-cap:${humanId}`]);
+  const [r] = await tx.query("SELECT COUNT(*) AS n FROM agents WHERE human_id = ?", [humanId]);
+  if (num(r.n) >= AGENTS_PER_HUMAN_CAP)
+    throw new Error(
+      `agent cap reached: this account already has ${num(r.n)} agents (cap ${AGENTS_PER_HUMAN_CAP}); reuse one of them (rotate its token from the dashboard for a fresh one)`
+    );
 }
 
 /** `system: true` only for the board's own judge identities (RESERVED_AGENT_NAMES). */
@@ -216,34 +516,71 @@ export async function provisionAgent(db: Db, name: string) {
 export async function rotateToken(db: Db, name: string) {
   await mustAgent(db, name);
   const token = newToken();
-  await db.query("UPDATE agents SET api_token_hash = ? WHERE name = ?", [await hashToken(token), name]);
+  await db.query("UPDATE agents SET api_token_hash = ?, api_token_kind = NULL WHERE name = ?", [await hashToken(token), name]);
   await db.query("DELETE FROM oauth_grants WHERE agent_name = ?", [name]);
   return { name, token };
 }
 
-/** The agent behind a bearer token: its own API token, or an unexpired OAuth access token. */
+/** A readable name for an OAuth client_id: a registered client's own name, a metadata document's host. */
+function clientLabel(clientId: string): string {
+  try {
+    if (clientId.startsWith("dcr_")) {
+      const bytes = Uint8Array.from(atob(clientId.slice(4).replace(/-/g, "+").replace(/_/g, "/")), (ch) => ch.charCodeAt(0));
+      return String(JSON.parse(new TextDecoder().decode(bytes)).n);
+    }
+    return new URL(clientId).host;
+  } catch {
+    return clientId.slice(0, 80);
+  }
+}
+
+/**
+ * The agent behind a bearer token: its own API token, one of its read-only
+ * tokens (agent_tokens), or an unexpired OAuth access token. One query, each
+ * branch on a unique hash index. Adds token_scope ("write", or "read": the
+ * API refuses every write) and via, the token's label in the owner's
+ * activity log: "main token", "cli login" (the token dabloons login saved),
+ * "read-only token #N" or "oauth grant #N (client)".
+ */
 export async function getAgentByToken(db: TxDb, token: string) {
   const hash = await hashToken(token);
-  let rows = await db.query("SELECT * FROM agents WHERE api_token_hash = ?", [hash]);
-  if (!rows.length)
-    rows = await db.query(
-      "SELECT a.* FROM oauth_grants g JOIN agents a ON a.name = g.agent_name WHERE g.access_hash = ? AND g.access_expires_at > ?",
-      [hash, nowIso()]
-    );
-  return rows.length ? normAgent(rows[0]) : null;
+  const rows = await db.query(
+    `SELECT a.*, 'main' AS via_kind, NULL::bigint AS via_id, NULL AS via_client FROM agents a WHERE a.api_token_hash = ?
+     UNION ALL SELECT a.*, 'read', t.id, NULL FROM agent_tokens t JOIN agents a ON a.name = t.agent_name WHERE t.token_hash = ?
+     UNION ALL SELECT a.*, 'oauth', g.id, g.client_id FROM oauth_grants g JOIN agents a ON a.name = g.agent_name
+       WHERE g.access_hash = ? AND g.access_expires_at > ?
+     LIMIT 1`,
+    [hash, hash, hash, nowIso()]
+  );
+  if (!rows.length) return null;
+  const { via_kind, via_id, via_client, ...a } = rows[0];
+  const via =
+    via_kind === "read" ? `read-only token #${via_id}`
+    : via_kind === "oauth" ? `oauth grant #${via_id} (${clientLabel(via_client)})`
+    : a.api_token_kind === "login" ? "cli login" : "main token";
+  return { ...normAgent(a), token_scope: via_kind === "read" ? ("read" as const) : ("write" as const), via };
 }
 
 /* ---------- OAuth for the hosted MCP server ----------
  * A connector signs in with OAuth 2.1 (authorization code + PKCE S256). The
  * human approves at /authorize (createOAuthCode); the connector redeems the
- * code (redeemOAuthCode), which creates a new agent under that human and a
- * grant: a short-lived access token plus a refresh token, hash-only, rotated
- * together on refresh. Client identity and redirect_uri checks live in
- * web/src/oauth.ts; here they are just stored and compared.
+ * code (redeemOAuthCode), which creates a new agent under that human (or,
+ * when that human connected this same client_id before, reuses that agent:
+ * agents.oauth_client_id) and a grant: a short-lived access token plus a
+ * refresh token, hash-only, rotated together on refresh. A refresh token
+ * lives OAUTH_REFRESH_TTL_DAYS, renewed
+ * on every rotation; presenting one that was already rotated away revokes
+ * the whole grant (someone else holds a copy). Client identity and
+ * redirect_uri checks live in web/src/oauth.ts; here they are just stored
+ * and compared.
  */
 
 const OAUTH_CODE_TTL_SEC = 600;
 export const OAUTH_ACCESS_TTL_SEC = 3600;
+/** Days a refresh token stays usable; each refresh issues a new one with a fresh 90 days. */
+export const OAUTH_REFRESH_TTL_DAYS = 90;
+/** The one OAuth scope: act as the new agent on the board. Every token carries it; there are no narrower ones. */
+export const OAUTH_SCOPE = "agent";
 
 /** A free agent name like "claude-x7k2" from a client's display name. */
 export async function suggestAgentName(db: TxDb, clientName: string) {
@@ -256,15 +593,34 @@ export async function suggestAgentName(db: TxDb, clientName: string) {
   return autoAgentName();
 }
 
-/** The human approved a connector: a one-time code for it to redeem within 10 minutes. */
+/**
+ * The agent a human's earlier connection from this exact client_id created:
+ * the newest one, if several. A reconnect from the same client reuses it
+ * instead of creating another agent. (A DCR client registering different
+ * redirect URIs, e.g. a new loopback port, gets a new client_id: a new agent.)
+ */
+export async function oauthAgentFor(db: TxDb, humanId: number, clientId: string): Promise<string | null> {
+  const rows = await db.query(
+    "SELECT name FROM agents WHERE human_id = ? AND oauth_client_id = ? ORDER BY created_at DESC, name LIMIT 1",
+    [humanId, clientId]
+  );
+  return rows.length ? String(rows[0].name) : null;
+}
+
+/** The human approved a connector: a one-time code for it to redeem within 10 minutes, for a new agent or the one it reconnects. */
 export async function createOAuthCode(
   db: Db,
   o: { humanId: number; clientId: string; redirectUri: string; codeChallenge: string; agentName: string }
 ) {
-  const agentName = o.agentName.trim();
-  checkAgentName(agentName);
-  if ((await db.query("SELECT 1 FROM agents WHERE name = ?", [agentName])).length)
-    throw new Error(`agent already exists: ${agentName}`);
+  const reused = await oauthAgentFor(db, o.humanId, o.clientId);
+  const agentName = reused ?? o.agentName.trim();
+  if (!reused) {
+    checkAgentName(agentName);
+    if ((await db.query("SELECT 1 FROM agents WHERE name = ?", [agentName])).length)
+      throw new Error(`agent already exists: ${agentName}`);
+    // Checked again, under the lock, when the code is redeemed.
+    await db.transaction((tx) => checkAgentCap(tx, o.humanId));
+  }
   if (!/^[A-Za-z0-9_-]{43}$/.test(o.codeChallenge)) throw new Error("invalid code_challenge (PKCE S256 required)");
   const code = newToken();
   await db.query(
@@ -273,7 +629,7 @@ export async function createOAuthCode(
     [await hashToken(code), o.clientId, o.redirectUri, o.codeChallenge, o.humanId, agentName,
       new Date(Date.now() + OAUTH_CODE_TTL_SEC * 1000).toISOString()]
   );
-  return code;
+  return { code, agentName, reused: reused != null };
 }
 
 /** OAuth error with its RFC 6749 code (invalid_grant, invalid_request, ...). */
@@ -292,19 +648,22 @@ async function issueGrantTokens(tx: TxDb, grant: { id?: number; agentName: strin
   const access = newToken();
   const refresh = newToken();
   const expires = new Date(Date.now() + OAUTH_ACCESS_TTL_SEC * 1000).toISOString();
+  const refreshExpires = new Date(Date.now() + OAUTH_REFRESH_TTL_DAYS * 86400_000).toISOString();
   if (grant.id == null)
     await tx.query(
-      "INSERT INTO oauth_grants (agent_name, client_id, access_hash, access_expires_at, refresh_hash) VALUES (?, ?, ?, ?, ?)",
-      [grant.agentName, grant.clientId, await hashToken(access), expires, await hashToken(refresh)]
+      `INSERT INTO oauth_grants (agent_name, client_id, access_hash, access_expires_at, refresh_hash, refresh_expires_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [grant.agentName, grant.clientId, await hashToken(access), expires, await hashToken(refresh), refreshExpires]
     );
   else
-    await tx.query("UPDATE oauth_grants SET access_hash = ?, access_expires_at = ?, refresh_hash = ? WHERE id = ?", [
-      await hashToken(access), expires, await hashToken(refresh), grant.id,
-    ]);
-  return { access_token: access, token_type: "Bearer", expires_in: OAUTH_ACCESS_TTL_SEC, refresh_token: refresh };
+    await tx.query(
+      "UPDATE oauth_grants SET access_hash = ?, access_expires_at = ?, refresh_hash = ?, refresh_expires_at = ? WHERE id = ?",
+      [await hashToken(access), expires, await hashToken(refresh), refreshExpires, grant.id]
+    );
+  return { access_token: access, token_type: "Bearer", expires_in: OAUTH_ACCESS_TTL_SEC, refresh_token: refresh, scope: OAUTH_SCOPE };
 }
 
-/** Redeem a code once: checks client, redirect_uri and PKCE, creates the agent, issues tokens. Also returns the new agent and its human. */
+/** Redeem a code once: checks client, redirect_uri and PKCE, creates the agent (or reuses this human's agent from the same client), issues tokens. Also returns the agent and its human. */
 export async function redeemOAuthCode(db: Db, o: { code: string; clientId: string; redirectUri: string; verifier: string }) {
   const hash = await hashToken(String(o.code ?? ""));
   return db.transaction(async (tx) => {
@@ -314,33 +673,84 @@ export async function redeemOAuthCode(db: Db, o: { code: string; clientId: strin
       throw new OAuthError("invalid_grant", "unknown, used or expired code");
     await tx.query("UPDATE oauth_codes SET used_at = ? WHERE code_hash = ?", [nowIso(), hash]);
     if (c.client_id !== o.clientId) throw new OAuthError("invalid_grant", "code was issued to another client");
-    if (o.redirectUri && c.redirect_uri !== o.redirectUri) throw new OAuthError("invalid_grant", "redirect_uri does not match");
+    // Every code is minted with the authorization request's redirect_uri, so the token request must repeat it exactly.
+    if (c.redirect_uri !== o.redirectUri)
+      throw new OAuthError("invalid_grant", "redirect_uri must match the one in the authorization request");
     if (!o.verifier || (await pkceS256(o.verifier)) !== c.code_challenge)
       throw new OAuthError("invalid_grant", "code_verifier does not match");
-    try {
-      checkAgentName(c.agent_name);
-    } catch (e) {
-      throw new OAuthError("invalid_grant", `${(e as Error).message} — connect again`);
+    const [existing] = await tx.query("SELECT human_id, oauth_client_id FROM agents WHERE name = ?", [c.agent_name]);
+    if (existing) {
+      // A reconnect: only this human's agent that this same client created.
+      if (existing.human_id == null || num(existing.human_id) !== num(c.human_id) || existing.oauth_client_id !== c.client_id)
+        throw new OAuthError("invalid_grant", `agent already exists: ${c.agent_name} — connect again`);
+    } else {
+      try {
+        checkAgentName(c.agent_name);
+        await checkAgentCap(tx, num(c.human_id));
+      } catch (e) {
+        throw new OAuthError("invalid_grant", `${(e as Error).message} — connect again`);
+      }
+      await tx.query("INSERT INTO agents (name, balance, human_id, oauth_client_id, created_at) VALUES (?, 0, ?, ?, ?)", [
+        c.agent_name, c.human_id, c.client_id, nowIso(),
+      ]);
     }
-    if ((await tx.query("SELECT 1 FROM agents WHERE name = ?", [c.agent_name])).length)
-      throw new OAuthError("invalid_grant", `agent already exists: ${c.agent_name} — connect again`);
-    await tx.query("INSERT INTO agents (name, balance, human_id, created_at) VALUES (?, 0, ?, ?)", [
-      c.agent_name, c.human_id, nowIso(),
-    ]);
     const tokens = await issueGrantTokens(tx, { agentName: c.agent_name, clientId: c.client_id });
-    return { tokens, agentName: String(c.agent_name), humanId: num(c.human_id) };
+    return { tokens, agentName: String(c.agent_name), humanId: num(c.human_id), reused: !!existing };
   });
 }
 
-/** Trade a refresh token for new access + refresh tokens; the old pair stops working. */
+/**
+ * Trade a refresh token for new access + refresh tokens; the old pair stops
+ * working and the old refresh token is remembered (oauth_used_refresh).
+ * Reuse of a remembered one means two parties hold the token: the whole
+ * grant is revoked (deleted, so its live access token dies too) and the
+ * connector has to connect again. Two refreshes racing with one token count
+ * as reuse too: the loser waits on the grant's row lock, then finds the
+ * token rotated away.
+ */
 export async function refreshOAuthGrant(db: Db, o: { refreshToken: string; clientId: string }) {
   const hash = await hashToken(String(o.refreshToken ?? ""));
-  return db.transaction(async (tx) => {
-    const rows = await tx.query("SELECT id, agent_name, client_id FROM oauth_grants WHERE refresh_hash = ? FOR UPDATE", [hash]);
+  // The revocation must commit, so errors are returned out of the transaction and thrown after it.
+  const r = await db.transaction(async (tx) => {
+    const rows = await tx.query(
+      "SELECT id, agent_name, client_id, refresh_expires_at FROM oauth_grants WHERE refresh_hash = ? FOR UPDATE",
+      [hash]
+    );
     const g = rows[0];
-    if (!g || g.client_id !== o.clientId) throw new OAuthError("invalid_grant", "unknown or revoked refresh token");
-    return issueGrantTokens(tx, { id: num(g.id), agentName: g.agent_name, clientId: g.client_id });
+    if (!g) {
+      const revoked = await tx.query(
+        "DELETE FROM oauth_grants WHERE id = (SELECT grant_id FROM oauth_used_refresh WHERE refresh_hash = ?) RETURNING id",
+        [hash]
+      );
+      return {
+        error: revoked.length
+          ? "refresh token was already used, so this connection has been revoked — connect again"
+          : "unknown or revoked refresh token",
+      };
+    }
+    if (g.client_id !== o.clientId) return { error: "unknown or revoked refresh token" };
+    if (new Date(g.refresh_expires_at).getTime() <= Date.now()) return { error: "refresh token expired — connect again" };
+    await tx.query("INSERT INTO oauth_used_refresh (refresh_hash, grant_id) VALUES (?, ?)", [hash, num(g.id)]);
+    return { tokens: await issueGrantTokens(tx, { id: num(g.id), agentName: g.agent_name, clientId: g.client_id }) };
   });
+  if (r.error) throw new OAuthError("invalid_grant", r.error);
+  return r.tokens!;
+}
+
+/**
+ * Cron: delete what can never be used again: expired OAuth codes, grants
+ * whose refresh token expired, remembered refresh tokens past their own
+ * 90 days, expired board sessions and expired device-login flows.
+ */
+export async function cleanupExpiredAuth(db: Db) {
+  const now = nowIso();
+  await db.query("DELETE FROM oauth_codes WHERE expires_at < ?", [now]);
+  await db.query("DELETE FROM oauth_grants WHERE refresh_expires_at < ?", [now]);
+  await db.query("DELETE FROM oauth_used_refresh WHERE used_at < ?", [
+    new Date(Date.now() - OAUTH_REFRESH_TTL_DAYS * 86400_000).toISOString(),
+  ]);
+  await db.query("DELETE FROM sessions WHERE expires_at < ?", [now]);
+  await db.query("DELETE FROM device_flows WHERE expires_at < ?", [now]);
 }
 
 /** Admin grant into an agent's account. Earned, never refundable. System-owned. */
@@ -364,20 +774,51 @@ export async function getEscrowed(db: TxDb, name: string): Promise<number> {
   return num(rows[0].n);
 }
 
-export async function listAgents(db: TxDb) {
-  const rows = await db.query("SELECT name, balance, runs_on, created_at FROM agents ORDER BY name");
-  return rows.map(normAgent);
+/** Every agent by name, a page at a time (q: limit, cursor). */
+export async function listAgents(db: TxDb, q: Query = {}) {
+  const limit = LIMIT(q);
+  const after = fromCursor(q.cursor, "name", (n) => typeof n === "string");
+  const rows = await db.query(
+    `SELECT ${PUBLIC_AGENT_FIELDS.join(", ")} FROM agents ${after ? "WHERE name > ?" : ""} ORDER BY name LIMIT ?`,
+    [...(after ?? []), limit + 1]
+  );
+  const { items, ...rest } = page(rows, limit, "name", (a) => [a.name]);
+  return { agents: items.map((r: any) => publicAgent(normAgent(r))), ...rest };
 }
 
-/** Identity profile: everything this agent has done, in one place. */
-export async function getAgentProfile(db: TxDb, name: string) {
+/** Rows per list on an agent profile. */
+const PROFILE_PAGE = 20;
+
+/**
+ * Identity profile: everything this agent has done, in one place. posted,
+ * worked and bids are the newest PROFILE_PAGE of each, with their own
+ * cursors (q: posted_cursor, worked_cursor, bids_cursor); totals and the
+ * record are counted over all of them.
+ */
+export async function getAgentProfile(db: TxDb, name: string, q: Query = {}) {
   const agent = await getBalance(db, name);
   const cols = "id, kind, group_id, title, status, price, escrow, timeframe_hours, deadline, submitted_at, created_at";
-  const posted = await db.query(`SELECT ${cols} FROM jobs WHERE poster = ? ORDER BY id DESC`, [name]);
-  const worked = await db.query(`SELECT ${cols}, verdict FROM jobs WHERE worker = ? ORDER BY id DESC`, [name]);
-  const bids = await db.query(
-    "SELECT b.id, b.job_id, b.price, b.status, j.title FROM bids b JOIN jobs j ON j.id = b.job_id WHERE b.bidder = ? ORDER BY b.id DESC",
-    [name]
+  const list = async (which: string, sql: string, idCol: string) => {
+    const before = fromCursor(q[`${which}_cursor`], which, isId);
+    const rows = await db.query(
+      `${sql} ${before ? `AND ${idCol} < ?` : ""} ORDER BY ${idCol} DESC LIMIT ?`,
+      [name, ...(before ?? []), PROFILE_PAGE + 1]
+    );
+    return page(rows, PROFILE_PAGE, which, (r) => [num(r.id)]);
+  };
+  const posted = await list("posted", `SELECT ${cols} FROM jobs WHERE poster = ?`, "id");
+  const worked = await list("worked", `SELECT ${cols}, verdict FROM jobs WHERE worker = ?`, "id");
+  const bids = await list(
+    "bids",
+    "SELECT b.id, b.job_id, b.price, b.status, j.title FROM bids b JOIN jobs j ON j.id = b.job_id WHERE b.bidder = ?",
+    "b.id"
+  );
+  const [t] = await db.query(
+    `SELECT (SELECT COUNT(*) FROM jobs WHERE poster = ?) AS posted, (SELECT COUNT(*) FROM jobs WHERE worker = ?) AS worked,
+       (SELECT COUNT(*) FROM bids WHERE bidder = ?) AS bids,
+       (SELECT COUNT(*) FROM jobs WHERE worker = ? AND verdict = 'pass') AS completed,
+       (SELECT COUNT(*) FROM jobs WHERE worker = ? AND verdict = 'fail') AS failed`,
+    [name, name, name, name, name]
   );
   // Passes and fails per job kind, from settled jobs this agent worked at arm's length.
   const settled = await db.query(
@@ -387,31 +828,35 @@ export async function getAgentProfile(db: TxDb, name: string) {
   );
   const byKind: Record<string, { passes: number; fails: number }> = {};
   for (const r of settled) (byKind[r.kind] ??= { passes: 0, fails: 0 })[r.verdict === "pass" ? "passes" : "fails"] = num(r.n);
+  const [qc] = await db.query(`SELECT ${QUALITY_COUNTS} FROM jobs WHERE worker = ? AND ${ARMS_LENGTH}`, [name]);
   // Only the selected columns: normJob would add project_id (not public), accepted_bid and group_job_ids as nulls.
   const row = (j: any) => {
     const n: any = normJob(j);
     return Object.fromEntries(Object.keys(j).map((k) => [k, n[k]]));
   };
   return {
-    ...agent,
-    posted: posted.map(row),
-    worked: worked.map(row),
-    bids: bids.map(normBid),
-    reputation: {
-      completed: worked.filter((j: any) => j.verdict === "pass").length,
-      failed: worked.filter((j: any) => j.verdict === "fail").length,
-      by_kind: byKind,
-    },
+    ...publicAgent(agent),
+    posted: posted.items.map(row),
+    worked: worked.items.map(row),
+    bids: bids.items.map(normBid),
+    totals: { posted: num(t.posted), worked: num(t.worked), bids: num(t.bids) },
+    has_more: { posted: posted.has_more, worked: worked.has_more, bids: bids.has_more },
+    next_cursor: { posted: posted.next_cursor, worked: worked.next_cursor, bids: bids.next_cursor },
+    reputation: { completed: num(t.completed), failed: num(t.failed), by_kind: byKind },
+    quality: quality(qc),
   };
 }
 
 /** The AI tool / model an agent says it runs on, e.g. "Claude Code / Opus 5.5". Empty clears it. */
-export async function setRunsOn(db: Db, name: string, runsOn: unknown) {
+export async function setRunsOn(db: Db, name: string, runsOn: unknown, via?: string) {
   if (typeof runsOn !== "string") throw new Error("runs_on must be text, e.g. \"Claude Code / Opus 5.5\"");
   const s = runsOn.trim();
   if (s.length > 80 || /[\x00-\x1f]/.test(s)) throw new Error("runs_on must be one line of at most 80 characters");
-  await db.query("UPDATE agents SET runs_on = ? WHERE name = ?", [s || null, name]);
-  return getBalance(db, name);
+  return db.transaction(async (tx) => {
+    await tx.query("UPDATE agents SET runs_on = ? WHERE name = ?", [s || null, name]);
+    await logActivity(tx, { agent: name, via, action: "runs_on" });
+    return getBalance(tx, name);
+  });
 }
 
 /* ---------- job kinds ----------
@@ -419,7 +864,7 @@ export async function setRunsOn(db: Db, name: string, runsOn: unknown) {
  * jev >= JEV_AUTO_RELEASE_THRESHOLD pays the worker automatically.
  * Every other kind is a report template: the poster gives a target URL (plus
  * optional notes, and a goal for site_walkthrough) and the server writes the
- * job text. Submissions must carry evidence, and jev's score is advisory:
+ * job text. Submissions must carry evidence, and jev doesn't judge them:
  * payment waits for the poster (or POSTER_SILENCE_HOURS of silence).
  */
 
@@ -583,6 +1028,8 @@ export async function postJob(
     minPasses?: number;
     project?: string;
     idempotencyKey?: string;
+    /** The token label for the activity log (getAgentByToken's via). */
+    via?: string;
   }
 ) {
   const poster = await mustAgent(db, o.poster);
@@ -596,6 +1043,7 @@ export async function postJob(
   };
   const prev = await original();
   if (prev) return prev;
+  for (const k of ["title", "requirements", "quality", "notes", "goal", "target"] as const) capText(k, o[k]);
   const kind = o.kind ?? "custom";
   let target: string | null = null;
   if (kind === "custom") {
@@ -655,6 +1103,7 @@ export async function postJob(
   return db.transaction(async (tx) => {
     // Locked debit: the balance check and the debit happen under the row lock.
     const total = o.price * copies;
+    await checkSpendCap(tx, o.poster, total);
     const from: Account = project ? { table: "projects", id: num(project.id) } : { table: "agents", id: o.poster };
     let purchased = await debit(tx, from, total);
     if (purchased == null)
@@ -677,6 +1126,7 @@ export async function postJob(
       ids.push(num(rows[0].id));
     }
     if (copies > 1) await tx.query("UPDATE jobs SET group_id = ? WHERE id = ?", [ids[0], ids[0]]);
+    await logActivity(tx, { agent: o.poster, via: o.via, action: "post", jobId: ids[0], amount: total });
     return getJob(tx, ids[0]);
   }).catch(async (e) => {
     // Lost a race to a repeat with the same key (its unique violation, or the balance it already spent): return that post.
@@ -688,39 +1138,125 @@ export async function postJob(
 
 const JOB_STATUSES = ["open", "assigned", "submitted", "completed", "failed", "refunded", "cancelled"];
 
+/** listJobs sort orders: [SQL sort key, direction]; ties break on id in the same direction. */
+const JOB_SORTS: Record<string, [string, "ASC" | "DESC"]> = {
+  newest: ["id", "DESC"],
+  oldest: ["id", "ASC"],
+  price_high: ["price", "DESC"],
+  price_low: ["price", "ASC"],
+  // Soonest deadline first; jobs with no deadline yet (open ones) last.
+  deadline: ["COALESCE(deadline, 'infinity')", "ASC"],
+};
+
+/** List rows: every column but the large private result and evidence (job show has those). */
+const LIST_COLS =
+  "id, poster, kind, target, title, requirements, quality, price, timeframe_hours, status, escrow, accepted_bid, worker, " +
+  "deadline, submitted_at, verdict, verdict_by, verdict_rationale, feedback, project_id, group_id, min_passes, created_at, updated_at, " +
+  `(SELECT array_agg(g.id ORDER BY g.id) FROM jobs g WHERE g.group_id = jobs.group_id) AS group_job_ids, ${BID_COUNT}`;
+
+/** s with LIKE's wildcards (and its escape character) escaped. */
+const likeEscape = (s: string) => s.replace(/[\\%_]/g, "\\$&");
+
 /**
- * Jobs newest first, optionally filtered: status, kind, and the caller's own
- * (mine = { agent, role }: posted, working, or bid — jobs it has a bid on).
+ * The job board, filtered and sorted (q: the query string of GET /api/jobs).
+ * Filters: status, kind, min_price, max_price, poster, worker, target (an
+ * owner/name or GitHub repo URL matches that repo's jobs; other text is a
+ * case-insensitive substring of the target URL), no_bids (open jobs with no
+ * bid on any copy), and two that need the caller (`me`): role (posted,
+ * working, or bid — jobs it has a bid on) and eligible (open jobs it could
+ * bid on: not its own, min_passes met as placeBid counts them, not a project
+ * bounty it is barred from, and none at all while it is at the active-job cap).
+ * updated_since (an ISO timestamp) lists only jobs changed after it, oldest
+ * change first (updated_at, then id) and takes no sort: what a poller or
+ * `dabloons job watch` asks for, combinable with every filter (role above all).
+ * Paged by cursor (limit, cursor -> has_more, next_cursor) in every sort.
  */
-export async function listJobs(
-  db: TxDb,
-  status?: string,
-  page?: { limit?: number; offset?: number },
-  filter: { kind?: string; mine?: { agent: string; role: string } } = {}
-) {
-  const limit = page?.limit ?? 50;
-  const offset = page?.offset ?? 0;
-  if (!Number.isInteger(limit) || limit < 1 || limit > 200) throw new Error("limit must be a whole number from 1 to 200 (default 50)");
-  if (!Number.isInteger(offset) || offset < 0) throw new Error("offset must be a whole number, 0 or more");
+export async function listJobs(db: TxDb, q: Query, me?: { name: string; human_id: number | null }) {
+  const limit = LIMIT(q);
+  // offset: deprecated, kept for one release because CLI 0.6.4 sends it; cursors are the way.
+  const offset = intParam(q, "offset", 0, Number.MAX_SAFE_INTEGER, ", 0 or more") ?? 0;
+  let since: string | null = null;
+  if (q.updated_since) {
+    const t = Date.parse(q.updated_since);
+    if (isNaN(t)) throw new Error("updated_since must be an ISO timestamp, e.g. 2026-10-02T12:00:00.000Z");
+    if (q.sort) throw new Error("updated_since lists jobs oldest change first and takes no sort: drop sort");
+    since = new Date(t).toISOString();
+  }
+  const sort = since ? "updated" : q.sort || "newest";
+  if (!since && !Object.hasOwn(JOB_SORTS, sort)) throw new Error(`sort must be one of: ${Object.keys(JOB_SORTS).join(", ")} (default newest)`);
+  const [key, dir] = since ? ["updated_at", "ASC"] : JOB_SORTS[sort];
+  const isTime = (k: unknown) => typeof k === "string" && !isNaN(Date.parse(k));
+  const after = fromCursor(q.cursor, sort, (k, id) =>
+    isId(id) && (sort === "deadline" ? k === "infinity" || isTime(k) : sort === "updated" ? isTime(k) : isId(k))
+  );
+  if (after && offset) throw new Error("use cursor or offset, not both (offset is deprecated)");
+  const { status, kind, role } = q;
   if (status && !JOB_STATUSES.includes(status)) throw new Error(`status must be one of: ${JOB_STATUSES.join(", ")}`);
-  if (filter.kind && filter.kind !== "custom" && !Object.hasOwn(JOB_KINDS, filter.kind))
-    throw new Error(`kind must be one of: ${KIND_NAMES}`);
+  if (kind && kind !== "custom" && !Object.hasOwn(JOB_KINDS, kind)) throw new Error(`kind must be one of: ${KIND_NAMES}`);
+  const minPrice = intParam(q, "min_price", 0, Number.MAX_SAFE_INTEGER, ", 0 or more");
+  const maxPrice = intParam(q, "max_price", 0, Number.MAX_SAFE_INTEGER, ", 0 or more");
+  if (minPrice != null && maxPrice != null && minPrice > maxPrice) throw new Error("min_price can't be above max_price");
+  const noBids = boolParam(q, "no_bids");
+  const eligible = boolParam(q, "eligible");
+  if ((noBids || eligible) && status && status !== "open")
+    throw new Error("no_bids and eligible list open jobs only: drop status, or use status=open");
+
   const where: string[] = [];
   const params: unknown[] = [];
-  if (status) where.push("status = ?"), params.push(status);
-  if (filter.kind) where.push("kind = ?"), params.push(filter.kind);
-  if (filter.mine) {
-    const col = { posted: "poster = ?", working: "worker = ?", bid: "id IN (SELECT job_id FROM bids WHERE bidder = ?)" }[
-      filter.mine.role
-    ];
-    if (!col) throw new Error("role must be posted, working or bid");
-    where.push(col), params.push(filter.mine.agent);
+  const add = (sql: string, ...p: unknown[]) => (where.push(sql), params.push(...p));
+  if (status) add("status = ?", status);
+  if (since) add("updated_at > ?", since);
+  if (kind) add("kind = ?", kind);
+  if (minPrice != null) add("price >= ?", minPrice);
+  if (maxPrice != null) add("price <= ?", maxPrice);
+  for (const k of ["poster", "worker"]) {
+    if (!q[k]) continue;
+    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(q[k]!)) throw new Error(`${k} must be an agent name`);
+    add(`${k} = ?`, q[k]);
   }
+  if (q.target) {
+    const t = q.target.trim();
+    if (!t || t.length > 200) throw new Error("target must be 1-200 characters");
+    let repo: string | null = null;
+    try {
+      repo = parseRepo(t);
+    } catch {}
+    if (repo) add("(lower(target) = ? OR lower(target) LIKE ?)", `https://github.com/${repo}`, `https://github.com/${likeEscape(repo)}/%`);
+    else add("target ILIKE ?", `%${likeEscape(t)}%`);
+  }
+  if (noBids) {
+    add("status = 'open'");
+    add(
+      "NOT EXISTS (SELECT 1 FROM bids b JOIN jobs g ON g.id = b.job_id WHERE (g.id = jobs.id OR g.group_id = jobs.group_id) AND b.status <> 'withdrawn')"
+    );
+  }
+  if (role) {
+    if (!me) throw new Error("role needs your agent token");
+    const col = { posted: "poster = ?", working: "worker = ?", bid: "id IN (SELECT job_id FROM bids WHERE bidder = ?)" }[role];
+    if (!col) throw new Error("role must be posted, working or bid");
+    add(col, me.name);
+  }
+  if (eligible) {
+    if (!me) throw new Error("eligible needs your agent token");
+    add("status = 'open'");
+    add("poster <> ?", me.name);
+    const passes = Object.entries(await passesByKind(db, me.name));
+    add(`(min_passes = 0${" OR (kind = ? AND min_passes <= ?)".repeat(passes.length)})`, ...passes.flat());
+    // checkProjectWorker's rule: project bounties need a human, and not the maintainer.
+    if (me.human_id == null) add("project_id IS NULL");
+    else add("(project_id IS NULL OR project_id NOT IN (SELECT id FROM projects WHERE human_id = ?))", me.human_id);
+    if ((await activeJobCount(db, me)) >= ACTIVE_JOB_CAP) add("FALSE");
+  }
+  // Rows strictly after the cursor's (sort key, id) in this order.
+  if (after) add(`(${key}, id) ${dir === "DESC" ? "<" : ">"} (?, ?)`, ...after);
   const rows = await db.query(
-    `SELECT ${JOB_COLS} FROM jobs ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY id DESC LIMIT ? OFFSET ?`,
-    [...params, limit, offset]
+    `SELECT ${LIST_COLS} FROM jobs ${where.length ? "WHERE " + where.join(" AND ") : ""}
+     ORDER BY ${key === "id" ? "" : `${key} ${dir}, `}id ${dir} LIMIT ? OFFSET ?`,
+    [...params, limit + 1, offset]
   );
-  return rows.map(normJob);
+  const sortKey = ({ id: "id", price: "price", updated_at: "updated_at" } as Record<string, string>)[key] ?? "deadline";
+  const { items, ...rest } = page(rows.map(normJob), limit, sort, (j) => [j[sortKey] ?? "infinity", j.id]);
+  return { jobs: items, ...rest };
 }
 
 export async function getJob(db: TxDb, id: number) {
@@ -729,46 +1265,135 @@ export async function getJob(db: TxDb, id: number) {
   return normJob(rows[0]);
 }
 
-/** price is an optional counter-offer; omitted = the posted price. */
-export async function placeBid(db: Db, o: { bidder: string; jobId: number; proposal: string; price?: number }) {
+/**
+ * price is an optional counter-offer; omitted = the posted price. One bid per
+ * agent per job, a group of copies counting as one job: bidding again while
+ * that bid is pending replaces its proposal and price (updated: true); once
+ * it is accepted it can't change (withdrawBid takes back a pending one).
+ */
+export async function placeBid(db: Db, o: { bidder: string; jobId: number; proposal: string; price?: number; via?: string }) {
   const bidder = await mustAgent(db, o.bidder);
   const job = await getJob(db, o.jobId);
   if (job.status !== "open") throw new Error(`job ${o.jobId} is not open for bids (status: ${job.status})`);
   if (o.bidder === job.poster) throw new Error("poster cannot bid on their own job");
   await checkProjectWorker(db, bidder, job);
+  await checkActiveCap(db, bidder);
   if (!o.proposal?.trim()) throw new Error("proposal is required — bid like a contractor, not an auction");
+  capText("proposal", o.proposal);
   if (o.price != null && (!Number.isInteger(o.price) || o.price <= 0))
     throw new Error("price must be a positive integer (omit it to bid at the posted price)");
   if (o.price != null && o.price < MIN_PRICE[job.kind])
     throw new Error(`price must be at least ${MIN_PRICE[job.kind]} dabloons for ${job.kind} bounties (omit it to bid at the posted price)`);
   if (job.min_passes > 0) {
-    const r = await db.query(
-      `SELECT COUNT(*) AS n FROM jobs WHERE worker = ? AND kind = ? AND verdict = 'pass' AND ${ARMS_LENGTH}`,
-      [o.bidder, job.kind]
-    );
-    if (num(r[0].n) < job.min_passes)
+    const n = (await passesByKind(db, o.bidder))[job.kind] ?? 0;
+    if (n < job.min_passes)
       throw new Error(
-        `job ${o.jobId} only takes bids from agents with at least ${job.min_passes} passed ${job.kind} jobs; ${o.bidder} has ${num(r[0].n)}`
+        `job ${o.jobId} only takes bids from agents with at least ${job.min_passes} passed ${job.kind} jobs; ${o.bidder} has ${n}`
       );
   }
 
-  const rows = await db.query(
-    "INSERT INTO bids (job_id, bidder, proposal, price, status, created_at) VALUES (?, ?, ?, ?, 'pending', ?) RETURNING id",
-    [o.jobId, o.bidder, o.proposal.trim(), o.price ?? null, nowIso()]
-  );
-  const bidRows = await db.query("SELECT * FROM bids WHERE id = ?", [num(rows[0].id)]);
-  return normBid(bidRows[0]);
+  // Insert under the group's row locks (every copy, in id order, as acceptBid
+  // takes them), re-checking the job is still open, so a bid can't land on a
+  // job a concurrent accept, cancel or expiry just closed (and an expiry waits
+  // for it, then sees it as fresh activity). The bid trigger (migration 017)
+  // bumps every copy's updated_at, so those rows must be locked in this order
+  // first or a bid and an accept could deadlock.
+  return db.transaction(async (tx) => {
+    await lockGroup(tx, o.jobId);
+    const [j] = await tx.query("SELECT status, COALESCE(group_id, id) AS grp FROM jobs WHERE id = ?", [o.jobId]);
+    if (j.status !== "open") throw new Error(`job ${o.jobId} is not open for bids (status: ${j.status})`);
+    // The partial unique index (job_group, bidder) makes this race-safe: a
+    // second bid from the same agent on the group becomes an update of its
+    // pending bid, or no row at all when that bid was already accepted.
+    const rows = await tx.query(
+      `INSERT INTO bids (job_id, job_group, bidder, proposal, price, status, created_at) VALUES (?, ?, ?, ?, ?, 'pending', ?)
+       ON CONFLICT (job_group, bidder) WHERE status IN ('pending', 'accepted')
+       DO UPDATE SET proposal = EXCLUDED.proposal, price = EXCLUDED.price WHERE bids.status = 'pending'
+       RETURNING *, xmax::text <> '0' AS updated`,
+      [o.jobId, num(j.grp), o.bidder, o.proposal.trim(), o.price ?? null, nowIso()]
+    );
+    if (!rows.length) {
+      const [b] = await tx.query("SELECT id, status FROM bids WHERE job_group = ? AND bidder = ? AND status IN ('pending', 'accepted')", [
+        num(j.grp), o.bidder,
+      ]);
+      throw new Error(
+        `you already have bid ${b ? num(b.id) : ""} on job ${o.jobId}${b ? ` (${b.status})` : ""}: one bid per agent per job (copies count as one), and only a pending bid can be changed`
+      );
+    }
+    await logActivity(tx, { agent: o.bidder, via: o.via, action: rows[0].updated ? "bid_update" : "bid", jobId: o.jobId, bidId: num(rows[0].id), amount: o.price ?? null });
+    return normBid(rows[0]);
+  });
 }
 
-/** Bids on a job, or on every copy of it: a bid on any copy can be accepted onto any open copy. */
-export async function listBids(db: TxDb, jobId: number) {
+/**
+ * The bidder takes back their own pending bid: status withdrawn, so it can't
+ * be accepted, and they may bid on the job again while it is open. acceptBid
+ * row-locks the bid, so an accept and a withdrawal can't both win.
+ */
+export async function withdrawBid(db: Db, o: { bidder: string; jobId: number; bidId: number; via?: string }) {
+  const job = await getJob(db, o.jobId);
+  const group: number[] = job.group_job_ids ?? [job.id];
+  return db.transaction(async (tx) => {
+    // The group's rows first, in acceptBid's order: the bid trigger updates them.
+    await lockGroup(tx, o.jobId);
+    const rows = await tx.query(
+      "UPDATE bids SET status = 'withdrawn' WHERE id = ? AND bidder = ? AND status = 'pending' AND job_id = ANY(?) RETURNING *",
+      [o.bidId, o.bidder, group]
+    );
+    if (rows.length) {
+      await logActivity(tx, { agent: o.bidder, via: o.via, action: "withdraw_bid", jobId: num(rows[0].job_id), bidId: o.bidId });
+      return normBid(rows[0]);
+    }
+    const [b] = await tx.query("SELECT bidder, status, job_id FROM bids WHERE id = ?", [o.bidId]);
+    if (!b || !group.includes(num(b.job_id))) throw new Error(`unknown bid: ${o.bidId} (not a bid on job ${o.jobId} or its copies)`);
+    if (b.bidder !== o.bidder) throw new Error("only the bidder can withdraw this bid");
+    throw new Error(`bid ${o.bidId} can't be withdrawn: it is ${b.status}, and only a pending bid can be`);
+  });
+}
+
+/**
+ * Bids on a job, or on every copy of it (a bid on any copy can be accepted
+ * onto any open copy), a page at a time (q: limit, cursor), each with its
+ * bidder's quality signals. sort=quality (default): best bidders first, by
+ * first-try pass rate, then on-time rate, each smoothed toward 1/2 with one
+ * pass and one fail of prior ((n + 1) / (total + 2)), so a 1-for-1 newcomer
+ * doesn't outrank a 9-for-10 regular; ties go to the oldest bid.
+ * sort=oldest: by bid id.
+ */
+export async function listBids(db: TxDb, jobId: number, q: Query = {}) {
   const job = await getJob(db, jobId);
+  const limit = LIMIT(q);
+  const sort = q.sort || "quality";
+  if (sort !== "quality" && sort !== "oldest") throw new Error("sort must be quality (default) or oldest");
+  const byQuality = sort === "quality";
+  // "bids" is the oldest-first cursor's name from before quality sorting existed.
+  const after = byQuality
+    ? fromCursor(q.cursor, "bids_quality", (p, t, id) => [p, t, id].every(isId))
+    : fromCursor(q.cursor, "bids", isId);
+  // The keys are negated scores in millionths, so the whole order is ascending and one row comparison pages it.
   const rows = await db.query(
-    `SELECT b.*, a.runs_on FROM bids b JOIN agents a ON a.name = b.bidder
-     WHERE b.job_id IN (SELECT id FROM jobs WHERE id = ? OR group_id = ?) ORDER BY b.id`,
-    [jobId, job.group_id]
+    `WITH b AS (SELECT b.*, a.runs_on FROM bids b JOIN agents a ON a.name = b.bidder
+                WHERE b.job_id IN (SELECT id FROM jobs WHERE id = ? OR group_id = ?)),
+          q AS (SELECT worker, ${QUALITY_COUNTS} FROM jobs WHERE worker IN (SELECT bidder FROM b) AND ${ARMS_LENGTH} GROUP BY worker),
+          r AS (SELECT b.*, q.settled, q.first_try_passes, q.submitted, q.changes_requested, q.on_time, q.late,
+                  -((COALESCE(q.first_try_passes, 0) + 1) * 1000000 / (COALESCE(q.settled, 0) + 2)) AS pass_key,
+                  -((COALESCE(q.on_time, 0) + 1) * 1000000 / (COALESCE(q.on_time, 0) + COALESCE(q.late, 0) + 2)) AS time_key
+                FROM b LEFT JOIN q ON q.worker = b.bidder)
+     SELECT * FROM r
+     ${after ? (byQuality ? "WHERE (pass_key, time_key, id) > (?, ?, ?)" : "WHERE id > ?") : ""}
+     ORDER BY ${byQuality ? "pass_key, time_key, " : ""}id LIMIT ?`,
+    [jobId, job.group_id, ...(after ?? []), limit + 1]
   );
-  return rows.map(normBid);
+  const { items, ...rest } = page(rows, limit, byQuality ? "bids_quality" : "bids", (b) =>
+    byQuality ? [num(b.pass_key), num(b.time_key), num(b.id)] : [num(b.id)]
+  );
+  return {
+    bids: items.map(({ settled, first_try_passes, submitted, changes_requested, on_time, late, pass_key, time_key, ...b }: any) => ({
+      ...normBid(b),
+      quality: quality({ settled, first_try_passes, submitted, changes_requested, on_time, late }),
+    })),
+    ...rest,
+  };
 }
 
 /**
@@ -782,13 +1407,10 @@ export async function listBids(db: TxDb, jobId: number) {
  * to it), but never gives one agent — or two agents of one human — two
  * copies of the same job. Other bids stay pending until no copy is open.
  */
-export async function acceptBid(db: Db, o: { poster: string; jobId: number; bidId: number }) {
+export async function acceptBid(db: Db, o: { poster: string; jobId: number; bidId: number; via?: string }) {
   return db.transaction(async (tx) => {
     // Lock every copy, in id order, so two accepts in one group serialize.
-    await tx.query(
-      "SELECT id FROM jobs WHERE id = ? OR group_id = (SELECT group_id FROM jobs WHERE id = ?) ORDER BY id FOR UPDATE",
-      [o.jobId, o.jobId]
-    );
+    await lockGroup(tx, o.jobId);
     const job = await lockJob(tx, o.jobId);
     if (job.poster !== o.poster) throw new Error("only the poster can accept a bid on this job");
     if (job.status !== "open") throw new Error(`job ${o.jobId} is not open (status: ${job.status})`);
@@ -800,13 +1422,20 @@ export async function acceptBid(db: Db, o: { poster: string; jobId: number; bidI
              WHERE j.group_id = ? AND j.id != ?`,
             [job.group_id, o.jobId]
           );
-    const bidRows = await tx.query("SELECT * FROM bids WHERE id = ?", [o.bidId]);
+    // Row-locked, so a concurrent withdrawal either lands first (then this sees it) or waits and finds it accepted.
+    const bidRows = await tx.query("SELECT * FROM bids WHERE id = ? FOR UPDATE", [o.bidId]);
     const bid = bidRows[0];
-    if (!bid || (num(bid.job_id) !== o.jobId && !copies.some((c: any) => num(c.id) === num(bid.job_id))))
+    if (!bid) throw new Error(`unknown bid: ${o.bidId}`);
+    if (num(bid.job_id) !== o.jobId && !copies.some((c: any) => num(c.id) === num(bid.job_id)))
       throw new Error(`bid ${o.bidId} is not on job ${o.jobId} or one of its copies`);
     if (bid.status !== "pending") throw new Error(`bid ${o.bidId} is not pending`);
     const bidder = await mustAgent(tx, bid.bidder);
     await checkProjectWorker(tx, bidder, job);
+    // One accept at a time per human (or human-less agent), so two concurrent
+    // accepts can't both pass the cap check. An advisory lock, not the humans
+    // row: it can't deadlock with the balance row locks transfers take.
+    await tx.query("SELECT pg_advisory_xact_lock(hashtext(?))", [`active-cap:${bidder.human_id ?? "agent:" + bidder.name}`]);
+    await checkActiveCap(tx, bidder);
     for (const c of copies) {
       if (c.worker === bid.bidder)
         throw new Error(`${bid.bidder} already works job ${num(c.id)}, a copy of this job: each copy goes to a different agent`);
@@ -820,6 +1449,7 @@ export async function acceptBid(db: Db, o: { poster: string; jobId: number; bidI
     const diff = price - job.escrow;
     let escrowPurchased = job.escrow_purchased;
     if (diff > 0) {
+      await checkSpendCap(tx, job.poster, diff);
       const purchased = await debit(tx, posterAccount(job), diff);
       if (purchased == null)
         throw new Error(
@@ -847,21 +1477,25 @@ export async function acceptBid(db: Db, o: { poster: string; jobId: number; bidI
         "UPDATE bids SET status = 'rejected' WHERE status = 'pending' AND job_id IN (SELECT id FROM jobs WHERE id = ? OR group_id = ?)",
         [o.jobId, job.group_id]
       );
+    await logActivity(tx, { agent: o.poster, via: o.via, action: "accept", jobId: o.jobId, bidId: o.bidId, amount: diff });
     return getJob(tx, o.jobId);
   });
 }
 
 /** evidence: the worker's proof, separate from the result. Required for report kinds, optional for custom. */
-export async function submitWork(db: Db, o: { worker: string; jobId: number; result: string; evidence?: string }) {
+export async function submitWork(db: Db, o: { worker: string; jobId: number; result: string; evidence?: string; via?: string }) {
   return db.transaction(async (tx) => {
     const job = await lockJob(tx, o.jobId);
     if (job.status !== "assigned") throw new Error(`job ${o.jobId} is not assigned (status: ${job.status})`);
     if (job.worker !== o.worker) throw new Error("only the assigned worker can submit work");
     if (!o.result?.trim()) throw new Error("result is required");
     if (o.evidence != null && typeof o.evidence !== "string") throw new Error("evidence must be plain text");
+    capText("result", o.result);
+    capText("evidence", o.evidence);
     const evidence = o.evidence?.trim() || null;
     if (job.kind !== "custom" && !evidence)
       throw new Error(`evidence is required for ${job.kind} jobs: ${JOB_KINDS[job.kind]?.evidence ?? "your proof"}`);
+    await logActivity(tx, { agent: o.worker, via: o.via, action: "submit", jobId: o.jobId });
 
     // Late submission: escrow returns to poster, no judge needed.
     if (job.deadline && new Date() > new Date(job.deadline)) {
@@ -903,16 +1537,29 @@ function toJudgeInput(j: any): JudgeInput {
   };
 }
 
+/** Most times jev scores one job (resubmissions after change requests included); later submissions wait for the poster unjudged. */
+export const JUDGE_RUN_CAP = 3;
+
 /**
  * Settle via jev's native response shape. jev returns a calibrated p(pass),
- * not a verdict: on a custom job, at or above JEV_AUTO_RELEASE_THRESHOLD the
- * escrow auto-releases to the worker. Otherwise — and always on report kinds,
- * where the score is advisory only — the job stays submitted with the score
- * noted, for the poster to approve or the admin's verdict route.
+ * not a verdict: at or above JEV_AUTO_RELEASE_THRESHOLD the escrow
+ * auto-releases to the worker. Otherwise the job stays submitted with the
+ * score noted, for the poster to approve or the admin's verdict route.
+ * jev is only called on custom jobs whose poster and worker belong to
+ * different humans, at most JUDGE_RUN_CAP times per job: report kinds (where
+ * a score would be advisory and never pay), same-human jobs and jobs past the
+ * cap go straight to the poster (score null, nothing written). The run is
+ * claimed in one conditional UPDATE, so racing submissions can't overshoot.
  */
 export async function settleWithJev(db: Db, jobId: number, cfg: JevJudgeConfig) {
   const j0 = await getJob(db, jobId);
   if (j0.status !== "submitted") throw new Error(`job ${jobId} is not awaiting verdict (status: ${j0.status})`);
+  const claimed = await db.query(
+    `UPDATE jobs SET judge_runs = judge_runs + 1
+     WHERE id = ? AND status = 'submitted' AND kind = 'custom' AND judge_runs < ? AND ${ARMS_LENGTH} RETURNING id`,
+    [jobId, JUDGE_RUN_CAP]
+  );
+  if (!claimed.length) return { job: j0, autoReleased: false as const, score: null };
   let score: number;
   try {
     ({ score } = await runJudgeViaJev(toJudgeInput(j0), cfg));
@@ -928,13 +1575,6 @@ export async function settleWithJev(db: Db, jobId: number, cfg: JevJudgeConfig) 
   const judgeName = "jev";
   const existing = await db.query("SELECT name FROM agents WHERE name = ?", [judgeName]);
   if (!existing.length) await createAgent(db, judgeName, { system: true });
-  if (j0.kind !== "custom") {
-    await db.query("UPDATE jobs SET verdict_rationale = ? WHERE id = ?", [
-      `jev p(pass)=${score.toFixed(2)} — advisory only on ${j0.kind} jobs; awaiting poster approval`,
-      jobId,
-    ]);
-    return { job: await getJob(db, jobId), autoReleased: false as const, score };
-  }
   if (score >= JEV_AUTO_RELEASE_THRESHOLD) {
     const job = await recordVerdict(db, {
       judge: judgeName,
@@ -954,10 +1594,11 @@ export async function settleWithJev(db: Db, jobId: number, cfg: JevJudgeConfig) 
 /** Independent judge verdict: pass releases escrow to worker, fail refunds poster. */
 export async function recordVerdict(
   db: Db,
-  o: { judge: string; jobId: number; pass: boolean; rationale: string }
+  o: { judge: string; jobId: number; pass: boolean; rationale: string; via?: string }
 ) {
   await mustAgent(db, o.judge);
   if (!o.rationale?.trim()) throw new Error("rationale is required");
+  capText("rationale", o.rationale);
   return db.transaction(async (tx) => {
     const job = await lockJob(tx, o.jobId);
     if (job.status !== "submitted")
@@ -974,12 +1615,14 @@ export async function recordVerdict(
        WHERE id = ?`,
       [o.pass ? "completed" : "failed", o.pass ? "pass" : "fail", o.judge, o.rationale.trim(), o.jobId]
     );
+    // The poster approving (approveJob) is an agent write; jev and admin verdicts aren't.
+    if (o.judge === job.poster) await logActivity(tx, { agent: o.judge, via: o.via, action: "approve", jobId: o.jobId, amount: job.escrow });
     return getJob(tx, o.jobId);
   });
 }
 
 /** Poster approves submitted work on their own job, whatever the judge scored: escrow goes to the worker. */
-export async function approveJob(db: Db, o: { poster: string; jobId: number; rationale?: string }) {
+export async function approveJob(db: Db, o: { poster: string; jobId: number; rationale?: string; via?: string }) {
   const job = await getJob(db, o.jobId);
   if (job.poster !== o.poster) throw new Error("only the poster can approve this job");
   return recordVerdict(db, {
@@ -987,6 +1630,7 @@ export async function approveJob(db: Db, o: { poster: string; jobId: number; rat
     jobId: o.jobId,
     pass: true,
     rationale: o.rationale?.trim() || "approved by the poster",
+    via: o.via,
   });
 }
 
@@ -995,8 +1639,9 @@ export async function approveJob(db: Db, o: { poster: string; jobId: number; rat
  * to assigned with a fresh deadline (hours, default the job's timeframe) and
  * escrow stays put. The worker resubmits and jev judges it again.
  */
-export async function requestChanges(db: Db, o: { poster: string; jobId: number; note: string; hours?: number }) {
+export async function requestChanges(db: Db, o: { poster: string; jobId: number; note: string; hours?: number; via?: string }) {
   if (!o.note?.trim()) throw new Error("note is required — tell the worker what to change");
+  capText("note", o.note);
   return db.transaction(async (tx) => {
     const job = await lockJob(tx, o.jobId);
     if (job.poster !== o.poster) throw new Error("only the poster can request changes on this job");
@@ -1007,34 +1652,86 @@ export async function requestChanges(db: Db, o: { poster: string; jobId: number;
       throw new Error("hours must be between 1 and 168 (default: the job's timeframe)");
     const deadline = new Date(Date.now() + hours * 3600_000).toISOString();
     await tx.query(
-      "UPDATE jobs SET status = 'assigned', deadline = ?, feedback = ?, verdict_rationale = NULL WHERE id = ?",
+      "UPDATE jobs SET status = 'assigned', deadline = ?, feedback = ?, verdict_rationale = NULL, change_requests = change_requests + 1 WHERE id = ?",
       [deadline, o.note.trim(), o.jobId]
     );
+    await logActivity(tx, { agent: o.poster, via: o.via, action: "request_changes", jobId: o.jobId });
     return getJob(tx, o.jobId);
   });
 }
 
 /** Poster cancels an open job: its escrow refunds to the poster. */
-export async function cancelJob(db: Db, o: { poster: string; jobId: number }) {
+export async function cancelJob(db: Db, o: { poster: string; jobId: number; via?: string }) {
   return db.transaction(async (tx) => {
-    // Lock every copy, in id order (as acceptBid), so the open-copy check below sees settled statuses.
-    await tx.query(
-      "SELECT id FROM jobs WHERE id = ? OR group_id = (SELECT group_id FROM jobs WHERE id = ?) ORDER BY id FOR UPDATE",
-      [o.jobId, o.jobId]
-    );
+    // Lock every copy, in id order (as acceptBid), so the open-copy check in closeOpenJob sees settled statuses.
+    await lockGroup(tx, o.jobId);
     const job = await lockJob(tx, o.jobId);
     if (job.poster !== o.poster) throw new Error("only the poster can cancel this job");
     if (job.status !== "open") throw new Error(`job ${o.jobId} cannot be cancelled (status: ${job.status})`);
-    await refundEscrow(tx, job);
-    await tx.query("UPDATE jobs SET status = 'cancelled', escrow = 0, escrow_purchased = 0 WHERE id = ?", [o.jobId]);
-    // Pending bids are rejected once no copy is left open (always, for a lone job), as in acceptBid.
-    await tx.query(
-      `UPDATE bids SET status = 'rejected' WHERE status = 'pending' AND job_id IN (SELECT id FROM jobs WHERE id = ? OR group_id = ?)
-       AND NOT EXISTS (SELECT 1 FROM jobs WHERE group_id = ? AND status = 'open')`,
-      [o.jobId, job.group_id, job.group_id]
-    );
+    await closeOpenJob(tx, job, "status = 'cancelled'");
+    await logActivity(tx, { agent: o.poster, via: o.via, action: "cancel", jobId: o.jobId, amount: job.escrow });
     return getJob(tx, o.jobId);
   });
+}
+
+/**
+ * Close a locked open job (its copies locked too): escrow back to where it
+ * came from, `set` applied, and pending bids rejected once no copy is left
+ * open (always, for a lone job), as in acceptBid. Cancel and expiry share it.
+ */
+async function closeOpenJob(tx: TxDb, job: any, set: string, params: unknown[] = []) {
+  await refundEscrow(tx, job);
+  await tx.query(`UPDATE jobs SET ${set}, escrow = 0, escrow_purchased = 0 WHERE id = ?`, [...params, job.id]);
+  await tx.query(
+    `UPDATE bids SET status = 'rejected' WHERE status = 'pending' AND job_id IN (SELECT id FROM jobs WHERE id = ? OR group_id = ?)
+     AND NOT EXISTS (SELECT 1 FROM jobs WHERE group_id = ? AND status = 'open')`,
+    [job.id, job.group_id, job.group_id]
+  );
+}
+
+/** Hours an open job lives with no new activity: posted, or bid on (any copy). */
+export const OPEN_JOB_IDLE_HOURS = 24;
+
+/** SQL on `jobs`: its latest activity — when it was posted, or the latest bid on any of its copies. */
+const LAST_ACTIVITY = `GREATEST(jobs.created_at,
+  (SELECT MAX(b.created_at) FROM bids b WHERE b.job_id IN (SELECT g.id FROM jobs g WHERE g.id = jobs.id OR g.group_id = jobs.group_id)))`;
+
+/**
+ * Expire open jobs (no accepted bid) idle for OPEN_JOB_IDLE_HOURS: no bid on
+ * any copy since then, so bids left unaccepted that long expire it too. Each
+ * open copy expires on its own. Expiring refunds exactly like a cancel
+ * (closeOpenJob: escrow to the poster or the project, within the project's
+ * cap; pending bids rejected once no copy is open) and marks the job refunded
+ * by the system, as a missed deadline is. At most `batch` per run, one
+ * transaction each; a job that fails is logged and the rest go on.
+ * System-owned; runs on the cron next to sweepExpired.
+ */
+export async function sweepIdleOpenJobs(db: Db, batch = 500) {
+  const cutoff = () => new Date(Date.now() - OPEN_JOB_IDLE_HOURS * 3600_000).toISOString();
+  const rows = await db.query(`SELECT id FROM jobs WHERE status = 'open' AND ${LAST_ACTIVITY} < ? ORDER BY id LIMIT ?`, [
+    cutoff(),
+    batch,
+  ]);
+  const expired: number[] = [];
+  for (const r of rows) {
+    try {
+      const done = await db.transaction(async (tx) => {
+        await lockGroup(tx, num(r.id));
+        const job = await lockJob(tx, num(r.id));
+        // Re-check under the locks: an accept, cancel or new bid (placeBid locks the group too) may have landed since the scan.
+        if (job.status !== "open") return false;
+        if (!(await tx.query(`SELECT 1 FROM jobs WHERE id = ? AND ${LAST_ACTIVITY} < ?`, [job.id, cutoff()])).length) return false;
+        await closeOpenJob(tx, job, "status = 'refunded', verdict = 'fail', verdict_by = 'system', verdict_rationale = ?", [
+          `expired: no bid accepted and no new bid for ${OPEN_JOB_IDLE_HOURS} hours; escrow refunded`,
+        ]);
+        return true;
+      });
+      if (done) expired.push(num(r.id));
+    } catch (e) {
+      console.error(`expiring open job ${r.id} failed`, e);
+    }
+  }
+  return { expired };
 }
 
 /**
@@ -1232,15 +1929,13 @@ async function payReferralBonus(tx: TxDb, humanId: number) {
   const referredBy = hrows[0]?.referred_by_human_id;
   if (referredBy != null) {
     await tx.query("UPDATE humans SET balance = balance + ? WHERE id = ?", [REFERRAL_BONUS, humanId]);
-    const rrows = await tx.query("SELECT referral_count FROM humans WHERE id = ?", [
-      num(referredBy),
-    ]);
-    if (rrows.length && num(rrows[0].referral_count) < MAX_REFERRALS) {
-      await tx.query(
-        "UPDATE humans SET balance = balance + ?, referral_count = referral_count + 1 WHERE id = ?",
-        [REFERRAL_BONUS, num(referredBy)]
-      );
-    }
+    // Check and increment in one statement: a concurrent referee of the same
+    // referrer waits on the row and re-checks the cap after this commits, so
+    // two redemptions at 19 can't both pay.
+    await tx.query(
+      "UPDATE humans SET balance = balance + ?, referral_count = referral_count + 1 WHERE id = ? AND referral_count < ?",
+      [REFERRAL_BONUS, num(referredBy), MAX_REFERRALS]
+    );
   }
 }
 
@@ -1291,13 +1986,19 @@ export async function findOrCreateHumanByAuthId(
  */
 export async function redeemReferral(db: Db, humanId: number, code: string) {
   return db.transaction(async (tx) => {
-    const ref = await tx.query("SELECT id, referred_by_human_id FROM humans WHERE referral_code = ?", [
-      code.trim().toUpperCase(),
-    ]);
+    const ref = await tx.query("SELECT id FROM humans WHERE referral_code = ?", [code.trim().toUpperCase()]);
     if (!ref.length) throw new Error("unknown referral code");
     const referrerId = num(ref[0].id);
     if (referrerId === humanId) throw new Error("you can't use your own referral code");
-    if (ref[0].referred_by_human_id != null && num(ref[0].referred_by_human_id) === humanId)
+    // Lock both humans, lower id first, before checking: two people redeeming
+    // each other's codes at once take turns here (no deadlock), and the second
+    // sees the first's referred_by and is refused.
+    const both = await tx.query(
+      "SELECT id, referred_by_human_id FROM humans WHERE id = ANY(?) ORDER BY id FOR UPDATE",
+      [[humanId, referrerId]]
+    );
+    const referrer = both.find((r: any) => num(r.id) === referrerId);
+    if (referrer?.referred_by_human_id != null && num(referrer.referred_by_human_id) === humanId)
       throw new Error("you can't use a code from someone you referred");
     const set = await tx.query(
       "UPDATE humans SET referred_by_human_id = ? WHERE id = ? AND referred_by_human_id IS NULL RETURNING id",
@@ -1388,7 +2089,7 @@ export async function setHandle(db: Db, humanId: number, handle: string) {
  */
 export async function listAgentsForHuman(db: TxDb, humanId: number) {
   const rows = await db.query(
-    `SELECT a.name, a.balance, a.created_at,
+    `SELECT a.name, a.balance, a.daily_spend_cap, a.created_at,
        (SELECT COUNT(*) FROM jobs j WHERE (j.poster = a.name OR j.worker = a.name)
           AND j.status IN ('open', 'assigned', 'submitted')) AS active_jobs,
        (SELECT COALESCE(SUM(j.escrow), 0) FROM jobs j WHERE j.poster = a.name AND j.project_id IS NULL) AS escrow
@@ -1411,14 +2112,18 @@ export async function fundHuman(db: Db, id: number, amount: number) {
  * this is what the human pastes into their agent's environment.
  */
 export async function provisionAgentForHuman(db: Db, humanId: number, name: string) {
-  const agent = await createAgent(db, name);
+  name = name.trim();
+  checkAgentName(name);
   const token = newToken();
-  await db.query("UPDATE agents SET api_token_hash = ?, human_id = ? WHERE name = ?", [
-    await hashToken(token),
-    humanId,
-    name,
-  ]);
-  return { ...agent, human_id: humanId, token };
+  const tokenHash = await hashToken(token);
+  return db.transaction(async (tx) => {
+    await checkAgentCap(tx, humanId);
+    if ((await tx.query("SELECT 1 FROM agents WHERE name = ?", [name])).length) throw new Error(`agent already exists: ${name}`);
+    await tx.query("INSERT INTO agents (name, balance, api_token_hash, human_id, created_at) VALUES (?, 0, ?, ?, ?)", [
+      name, tokenHash, humanId, nowIso(),
+    ]);
+    return { name, balance: 0, human_id: humanId, token };
+  });
 }
 
 /**
@@ -1426,15 +2131,33 @@ export async function provisionAgentForHuman(db: Db, humanId: number, name: stri
  * human, by proving control of its API token (Moltbook-style). After claiming, the human can fund and manage it.
  */
 export async function claimAgent(db: Db, humanId: number, agentName: string, agentToken: string) {
-  const rows = await db.query("SELECT * FROM agents WHERE name = ?", [agentName]);
-  const agent = rows[0];
-  if (!agent) throw new Error(`unknown agent: ${agentName}`);
-  if (!agent.api_token_hash || agent.api_token_hash !== (await hashToken(agentToken)))
-    throw new Error("agent token does not match — only the agent's owner can claim it");
-  if (agent.human_id != null && num(agent.human_id) !== humanId)
-    throw new Error("agent is already claimed by another human");
-  await db.query("UPDATE agents SET human_id = ? WHERE name = ?", [humanId, agentName]);
-  return normAgent({ ...agent, human_id: humanId });
+  const tokenHash = await hashToken(agentToken);
+  return db.transaction(async (tx) => {
+    const rows = await tx.query("SELECT * FROM agents WHERE name = ? FOR UPDATE", [agentName]);
+    const agent = rows[0];
+    if (!agent) throw new Error(`unknown agent: ${agentName}`);
+    if (!agent.api_token_hash || agent.api_token_hash !== tokenHash)
+      throw new Error("agent token does not match — only the agent's owner can claim it");
+    if (agent.human_id != null && num(agent.human_id) !== humanId)
+      throw new Error("agent is already claimed by another human");
+    if (agent.human_id == null) await checkAgentCap(tx, humanId);
+    await tx.query("UPDATE agents SET human_id = ? WHERE name = ?", [humanId, agentName]);
+    return normAgent({ ...agent, human_id: humanId });
+  });
+}
+
+/**
+ * Lock the balance rows a transfer touches before reading or moving
+ * anything, in one global order: the human, then their agents by name. Every
+ * transfer between a human and agents goes through this, so two opposite
+ * transfers (main -> agent vs agent -> main, or A -> B vs B -> A) wait for
+ * each other instead of deadlocking. Lock order overall: job rows (by id),
+ * then acceptBid's per-human advisory lock, then one project, human or agent
+ * balance (settlements); transfers take human, then agents.
+ */
+async function lockBalances(tx: TxDb, humanId: number, agentNames: string[]) {
+  await tx.query("SELECT 1 FROM humans WHERE id = ? FOR UPDATE", [humanId]);
+  if (agentNames.length) await tx.query("SELECT 1 FROM agents WHERE name = ANY(?) ORDER BY name FOR UPDATE", [agentNames]);
 }
 
 /** Move dabloons from a human's main account into one of their agents. Atomic. */
@@ -1442,6 +2165,7 @@ export async function transferToAgent(db: Db, o: { humanId: number; agentName: s
   if (!Number.isInteger(o.amount) || o.amount <= 0)
     throw new Error("amount must be a positive integer");
   return db.transaction(async (tx) => {
+    await lockBalances(tx, o.humanId, [o.agentName]);
     const arows = await tx.query("SELECT * FROM agents WHERE name = ?", [o.agentName]);
     const agent = arows[0];
     if (!agent) throw new Error(`unknown agent: ${o.agentName}`);
@@ -1462,6 +2186,7 @@ export async function transferToHuman(
   o: { humanId: number; agentName: string; amount?: number }
 ) {
   return db.transaction(async (tx) => {
+    await lockBalances(tx, o.humanId, [o.agentName]);
     const arows = await tx.query("SELECT * FROM agents WHERE name = ?", [o.agentName]);
     const agent = arows[0];
     if (!agent) throw new Error(`unknown agent: ${o.agentName}`);
@@ -1518,6 +2243,7 @@ export async function transferForHuman(
   if (!Number.isInteger(o.amount) || o.amount <= 0) throw new Error("amount must be a positive integer");
   if (o.fromAgent === o.toAgent) throw new Error("choose two different accounts");
   return db.transaction(async (tx) => {
+    await lockBalances(tx, o.humanId, [o.fromAgent, o.toAgent].filter((n): n is string => !!n));
     for (const name of [o.fromAgent, o.toAgent]) if (name) await mustOwnAgent(tx, o.humanId, name);
     const account = (name?: string): Account =>
       name ? { table: "agents", id: name } : { table: "humans", id: o.humanId };
@@ -1628,19 +2354,28 @@ export async function markProjectVerified(db: Db, humanId: number, id: number) {
 
 /**
  * Cron: once per calendar month (UTC), refill every verified project to
- * PROJECT_ALLOWANCE. Escrow in its still-open bounties (no bid accepted yet)
- * counts toward the new month, so parking the allowance in open bounties
- * can't bank it across months.
+ * PROJECT_ALLOWANCE. Escrow in all its unsettled bounties (open, assigned or
+ * submitted) counts toward the new month, so balance + escrow never exceeds
+ * PROJECT_ALLOWANCE: escrow refunded later in the month (cancel, expiry,
+ * missed deadline, late submission, admin fail) only gives back what was
+ * already counted, and the allowance can't be banked across months.
+ * Race-safe: the due projects are row-locked first, and every escrow
+ * increase (posting, accepting at a higher price) debits its project under
+ * that row lock, so the escrow sum read after the lock misses none of them.
  */
 export async function topUpProjects(db: Db) {
   const d = new Date();
   const monthStart = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1)).toISOString();
-  await db.query(
-    `UPDATE projects p SET topped_up_at = ?, balance = GREATEST(balance, ? -
-       (SELECT COALESCE(SUM(escrow), 0) FROM jobs WHERE project_id = p.id AND status = 'open'))
-     WHERE verified_at IS NOT NULL AND (topped_up_at IS NULL OR topped_up_at < ?)`,
-    [nowIso(), PROJECT_ALLOWANCE, monthStart]
-  );
+  const due = "verified_at IS NOT NULL AND (topped_up_at IS NULL OR topped_up_at < ?)";
+  await db.transaction(async (tx) => {
+    await tx.query(`SELECT id FROM projects WHERE ${due} ORDER BY id FOR UPDATE`, [monthStart]);
+    await tx.query(
+      `UPDATE projects p SET topped_up_at = ?, balance = GREATEST(balance, ? -
+         (SELECT COALESCE(SUM(escrow), 0) FROM jobs WHERE project_id = p.id AND status IN ('open', 'assigned', 'submitted')))
+       WHERE ${due}`,
+      [nowIso(), PROJECT_ALLOWANCE, monthStart]
+    );
+  });
 }
 
 /* ---------- stripe payments ---------- */
@@ -1738,11 +2473,6 @@ function normDeviceFlow(f: any) {
   };
 }
 
-/** Flip stale pending flows to expired. Idempotent; run before any flow read. */
-export async function expireDeviceFlows(db: TxDb) {
-  await db.query("UPDATE device_flows SET status = 'expired' WHERE status = 'pending' AND expires_at <= ?", [nowIso()]);
-}
-
 /**
  * Start a device flow. Returns the plaintext device_code (for the device
  * only — only its hash is stored) plus the public flow details.
@@ -1751,7 +2481,6 @@ export async function createDeviceFlow(db: Db, o: { suggestedName?: string } = {
   const deviceCode = newToken();
   const suggested = (o.suggestedName ?? "").trim() || null;
   if (suggested) checkAgentName(suggested);
-  await expireDeviceFlows(db);
   for (let tries = 0; tries < 8; tries++) {
     try {
       const rows = await db.query(
@@ -1776,14 +2505,15 @@ export async function createDeviceFlow(db: Db, o: { suggestedName?: string } = {
  * Throws authorization_pending / expired / unknown errors for the poller.
  */
 export async function pollDeviceFlow(db: Db, deviceCode: string) {
-  await expireDeviceFlows(db);
   const code = String(deviceCode ?? "");
-  const rows = await db.query("SELECT id, status, agent_name FROM device_flows WHERE device_code_hash = ?", [
+  const rows = await db.query("SELECT id, status, agent_name, expires_at FROM device_flows WHERE device_code_hash = ?", [
     await hashToken(code),
   ]);
   const flow = rows[0];
   if (!flow) throw new Error("unknown device code — run `dabloons login` again");
-  if (flow.status === "expired") throw new Error("device code expired — run `dabloons login` again");
+  // Expiry is checked on this one row (the cron deletes expired flows); a flow never approved in time is dead.
+  if (flow.status === "expired" || (flow.status === "pending" && new Date(flow.expires_at).getTime() <= Date.now()))
+    throw new Error("device code expired — run `dabloons login` again");
   if (flow.status === "pending") throw new Error("authorization_pending");
   if (flow.status !== "approved") throw new Error("token already retrieved — it was shown once");
   return db.transaction(async (tx) => {
@@ -1809,20 +2539,21 @@ export async function pollDeviceFlow(db: Db, deviceCode: string) {
  * generated.
  */
 export async function approveDeviceFlow(db: Db, humanId: number, userCode: string, name?: string) {
-  await expireDeviceFlows(db);
   const code = String(userCode ?? "").trim().toUpperCase();
   return db.transaction(async (tx) => {
-    const rows = await tx.query("SELECT * FROM device_flows WHERE user_code = ? AND status = 'pending' FOR UPDATE", [
-      code,
-    ]);
+    const rows = await tx.query(
+      "SELECT * FROM device_flows WHERE user_code = ? AND status = 'pending' AND expires_at > ? FOR UPDATE",
+      [code, nowIso()]
+    );
     const flow = rows[0];
     if (!flow) throw new Error("unknown or expired code — check the code on your device and try again");
+    await checkAgentCap(tx, humanId);
     const finalName = (name ?? "").trim() || flow.suggested_name || autoAgentName();
     checkAgentName(finalName);
     const taken = await tx.query("SELECT name FROM agents WHERE name = ?", [finalName]);
     if (taken.length) throw new Error(`agent already exists: ${finalName}`);
     await tx.query("INSERT INTO agents (name, balance, created_at) VALUES (?, 0, ?)", [finalName, nowIso()]);
-    await tx.query("UPDATE agents SET api_token_hash = ?, human_id = ? WHERE name = ?", [
+    await tx.query("UPDATE agents SET api_token_hash = ?, api_token_kind = 'login', human_id = ? WHERE name = ?", [
       flow.device_code_hash,
       humanId,
       finalName,

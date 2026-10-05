@@ -15,6 +15,7 @@ import { Route as DashboardRouteRouteImport } from './routes/dashboard/route'
 import { Route as DeviceRouteImport } from './routes/device'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as DashboardIndexRouteImport } from './routes/dashboard/index'
+import { Route as DashboardActivityRouteImport } from './routes/dashboard/activity'
 import { Route as DashboardBillingRouteImport } from './routes/dashboard/billing'
 import { Route as DashboardBountiesRouteImport } from './routes/dashboard/bounties'
 import { Route as DashboardProjectsRouteImport } from './routes/dashboard/projects'
@@ -50,6 +51,11 @@ const LoginRoute = LoginRouteImport.update({
 const DashboardIndexRoute = DashboardIndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => DashboardRouteRoute,
+} as any)
+const DashboardActivityRoute = DashboardActivityRouteImport.update({
+  id: '/activity',
+  path: '/activity',
   getParentRoute: () => DashboardRouteRoute,
 } as any)
 const DashboardBillingRoute = DashboardBillingRouteImport.update({
@@ -89,6 +95,7 @@ export interface FileRoutesByFullPath {
   '/authorize': typeof AuthorizeRoute
   '/device': typeof DeviceRoute
   '/login': typeof LoginRoute
+  '/dashboard/activity': typeof DashboardActivityRoute
   '/dashboard/billing': typeof DashboardBillingRoute
   '/dashboard/bounties': typeof DashboardBountiesRoute
   '/dashboard/projects': typeof DashboardProjectsRoute
@@ -102,6 +109,7 @@ export interface FileRoutesByTo {
   '/authorize': typeof AuthorizeRoute
   '/device': typeof DeviceRoute
   '/login': typeof LoginRoute
+  '/dashboard/activity': typeof DashboardActivityRoute
   '/dashboard/billing': typeof DashboardBillingRoute
   '/dashboard/bounties': typeof DashboardBountiesRoute
   '/dashboard/projects': typeof DashboardProjectsRoute
@@ -117,6 +125,7 @@ export interface FileRoutesById {
   '/authorize': typeof AuthorizeRoute
   '/device': typeof DeviceRoute
   '/login': typeof LoginRoute
+  '/dashboard/activity': typeof DashboardActivityRoute
   '/dashboard/billing': typeof DashboardBillingRoute
   '/dashboard/bounties': typeof DashboardBountiesRoute
   '/dashboard/projects': typeof DashboardProjectsRoute
@@ -133,6 +142,7 @@ export interface FileRouteTypes {
     | '/authorize'
     | '/device'
     | '/login'
+    | '/dashboard/activity'
     | '/dashboard/billing'
     | '/dashboard/bounties'
     | '/dashboard/projects'
@@ -146,6 +156,7 @@ export interface FileRouteTypes {
     | '/authorize'
     | '/device'
     | '/login'
+    | '/dashboard/activity'
     | '/dashboard/billing'
     | '/dashboard/bounties'
     | '/dashboard/projects'
@@ -160,6 +171,7 @@ export interface FileRouteTypes {
     | '/authorize'
     | '/device'
     | '/login'
+    | '/dashboard/activity'
     | '/dashboard/billing'
     | '/dashboard/bounties'
     | '/dashboard/projects'
@@ -221,6 +233,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DashboardIndexRouteImport
       parentRoute: typeof DashboardRouteRoute
     }
+    '/dashboard/activity': {
+      id: '/dashboard/activity'
+      path: '/activity'
+      fullPath: '/dashboard/activity'
+      preLoaderRoute: typeof DashboardActivityRouteImport
+      parentRoute: typeof DashboardRouteRoute
+    }
     '/dashboard/billing': {
       id: '/dashboard/billing'
       path: '/billing'
@@ -267,6 +286,7 @@ declare module '@tanstack/react-router' {
 }
 
 interface DashboardRouteRouteChildren {
+  DashboardActivityRoute: typeof DashboardActivityRoute
   DashboardBillingRoute: typeof DashboardBillingRoute
   DashboardBountiesRoute: typeof DashboardBountiesRoute
   DashboardProjectsRoute: typeof DashboardProjectsRoute
@@ -277,6 +297,7 @@ interface DashboardRouteRouteChildren {
 }
 
 const DashboardRouteRouteChildren: DashboardRouteRouteChildren = {
+  DashboardActivityRoute: DashboardActivityRoute,
   DashboardBillingRoute: DashboardBillingRoute,
   DashboardBountiesRoute: DashboardBountiesRoute,
   DashboardProjectsRoute: DashboardProjectsRoute,

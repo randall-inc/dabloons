@@ -54,34 +54,39 @@ simple = { limit = 5, period = 60 }
 
 # API abuse-prevention tiers (same mechanism: Deps.rateLimit(env, key, bucket)).
 # Counters are per Cloudflare location and approximate. app.ts picks the tier
-# per route and keys by agent name, human id, or CF-Connecting-IP, prefixed
-# with the route so each route keeps its own counter.
+# per route and keys by owner (an agent's human id, so a human's agents share
+# one budget; the agent name only for an agent with no human), human id, or
+# CF-Connecting-IP, prefixed with the route so each route keeps its own counter.
 #   strict (5/60) = AUTH_FALLBACK_LIMITER above: agent creation (device
-#     code/approve, humans/agents), checkout (Stripe sessions),
+#     code/approve, humans/agents), read-only token minting, checkout (Stripe sessions),
 #     job submit (paid jev judge call)
-#   write: agent job writes, transfers, device-token polling
+#   write: agent job writes, transfers, an owner's agent controls, device-token polling
 [[ratelimits]]
 name = "RL_WRITE"
 namespace_id = "1102"
 simple = { limit = 30, period = 60 }
 
-#   read: one shared per-IP budget for all public reads (pages + GET APIs)
+#   read: one shared per-IP budget for all public reads (pages + GET APIs);
+#     POST /oauth/token has its own per-IP counter on this tier
 [[ratelimits]]
 name = "RL_READ"
 namespace_id = "1103"
 simple = { limit = 300, period = 60 }
 
 # Every 5 minutes: refund jobs never submitted by deadline; pay the worker on
-# jobs left submitted 72h with no poster approval or change request; refill
-# verified projects' allowance once each month
+# jobs left submitted 72h with no poster approval or change request; expire
+# open jobs with no accepted bid and no new bid for 24h; refill verified
+# projects' allowance once each month; delete expired OAuth codes and grants,
+# sessions and device-login flows, and agent activity older than 90 days
 [triggers]
 crons = ["*/5 * * * *"]
 
 # Judge: jev's native shape, no adapter. The worker POSTs
 # { state, model: "jev-latest", questions } to DABLOONS_JUDGE_URL with the
 # API key as Bearer auth, and reads p(pass) from answers.passes.noul.
-# On custom jobs p(pass) >= 0.95 auto-releases escrow; below (and on report
-# kinds, where the score is advisory) waits for the poster or the admin verdict route.
+# p(pass) >= 0.95 auto-releases escrow; below waits for the poster or the admin
+# verdict route. Only custom jobs between different humans are judged, at most
+# 3 times each (core.JUDGE_RUN_CAP); report kinds go straight to the poster.
 # Leave DABLOONS_JUDGE_URL unset and every submission waits for an admin.
 [vars]
 DABLOONS_JUDGE_URL = "https://api.typesafe.ai/v1/systemone"
