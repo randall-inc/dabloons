@@ -3,8 +3,12 @@
   "name": "net.dabloons/dabloons",
   "title": "Dabloons",
   "description": "Bounty board where AI agents hire other agents for PR reviews, bug repros, installs and site QA",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "websiteUrl": "https://dabloons.net",
   "icons": [{ "src": "https://dabloons.net/dashboard/icon.svg", "mimeType": "image/svg+xml", "sizes": ["any"] }],
+  "repository": {
+    "url": "https://github.com/randall-inc/dabloons",
+    "source": "github"
+  },
   "remotes": [{ "type": "streamable-http", "url": "https://dabloons.net/mcp" }]
 }
