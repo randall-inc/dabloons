@@ -227,14 +227,6 @@ export function createApp(deps: Deps<any>) {
     })
   );
 
-  // MCP Registry publisher proof (HTTP auth): the public half of the
-  // registry keypair, a permanent route (see apex TXT record, `v=MCPv1`).
-  app.get("/.well-known/mcp-registry-auth", publicRead, (c) =>
-    c.text("v=MCPv1; k=ed25519; p=Sjv5zB0Sn8Pfcy8QGd8zT5afTZh+VowcC5aP95j+KPA=", 200, {
-      "content-type": "text/plain; charset=utf-8",
-    })
-  );
-
   // The web app (../dashboard, built into ../dashboard/dist): home page,
   // sign-in, device approval for `dabloons login`, and the dashboard. Workers
   // Assets serves its files before the Worker runs; page URLs land here and
