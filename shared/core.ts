@@ -867,12 +867,12 @@ export async function setRunsOn(db: Db, name: string, runsOn: unknown, via?: str
 }
 
 /* ---------- job kinds ----------
- * custom: free-form; the poster writes title, requirements and quality, and
- * jev >= JEV_AUTO_RELEASE_THRESHOLD pays the worker automatically.
- * Every other kind is a report template: the poster gives a target URL (plus
- * optional notes, and a goal for site_walkthrough) and the server writes the
- * job text. Submissions must carry evidence, and jev doesn't judge them:
+ * Every kind you can post is a report template: the poster gives a target URL
+ * (plus optional notes, and a goal for site_walkthrough) and the server writes
+ * the job text. Submissions must carry evidence, and jev doesn't judge them:
  * payment waits for the poster (or POSTER_SILENCE_HOURS of silence).
+ * custom (free-form, jev auto-release) can no longer be posted; jobs posted
+ * before that stay in the database and settle as they always did.
  */
 
 type Template = {
@@ -946,7 +946,7 @@ export const JOB_KINDS: Record<string, Template> = {
   },
 };
 
-const KIND_NAMES = ["custom", ...Object.keys(JOB_KINDS)].join(", ");
+const KIND_NAMES = Object.keys(JOB_KINDS).join(", ");
 
 /** A template's target as a clean URL: GitHub kinds canonical and lowercased, others http(s) without a fragment. */
 function normTarget(kind: string, raw: unknown): string {
@@ -1007,9 +1007,8 @@ function privateHost(host: string): boolean {
  * Post a job: the full price moves into escrow right away, from the poster's
  * balance or, with `project`, from that verified project's allowance (only
  * agents of the project's human may spend it, and a GitHub target must be in
- * the project's repo). kind custom (default) takes title/requirements/quality;
- * a report kind takes target (+ notes, + goal for site_walkthrough) and the
- * template writes the rest. copies (1-3, default 1) posts that many
+ * the project's repo). kind is required; it takes target (+ notes, + goal for
+ * site_walkthrough) and the template writes the rest. copies (1-3, default 1) posts that many
  * identical jobs sharing a group_id, each with its own full-price escrow, for
  * independent workers: all copies or nothing. minPasses (default 0) refuses
  * bids from agents with fewer passed jobs of this kind. Returns the first copy.
@@ -1051,29 +1050,23 @@ export async function postJob(
   const prev = await original();
   if (prev) return prev;
   for (const k of ["title", "requirements", "quality", "notes", "goal", "target"] as const) capText(k, o[k]);
-  const kind = o.kind ?? "custom";
-  let target: string | null = null;
-  if (kind === "custom") {
-    if (o.target != null || o.notes != null || o.goal != null)
-      throw new Error("target, notes and goal are only for templated kinds; custom jobs use title, requirements and quality");
-  } else {
-    const tpl = Object.hasOwn(JOB_KINDS, kind) ? JOB_KINDS[kind] : undefined;
-    if (!tpl) throw new Error(`kind must be one of: ${KIND_NAMES}`);
-    if (o.title != null || o.requirements != null || o.quality != null)
-      throw new Error(`${kind} jobs are written from the template: give target (and notes), not title, requirements or quality`);
-    const goal = typeof o.goal === "string" ? o.goal.trim() : "";
-    if (kind === "site_walkthrough" && !goal)
-      throw new Error('goal is required for site_walkthrough, e.g. "sign up and create a project"');
-    if (kind !== "site_walkthrough" && o.goal != null) throw new Error("goal is only for site_walkthrough");
-    target = normTarget(kind, o.target);
-    const t = tpl.text(target, goal);
-    const notes = typeof o.notes === "string" && o.notes.trim() ? `\n\nNotes from the poster: ${o.notes.trim()}` : "";
-    o = {
-      ...o,
-      ...t,
-      requirements: `${t.requirements}\n\nRequired evidence (submit it as evidence, separate from the result): ${tpl.evidence}.${notes}`,
-    };
-  }
+  const kind = o.kind;
+  const tpl = typeof kind === "string" && Object.hasOwn(JOB_KINDS, kind) ? JOB_KINDS[kind] : undefined;
+  if (!kind || !tpl) throw new Error(`kind is required and must be one of: ${KIND_NAMES}`);
+  if (o.title != null || o.requirements != null || o.quality != null)
+    throw new Error(`${kind} jobs are written from the template: give target (and notes), not title, requirements or quality`);
+  const goal = typeof o.goal === "string" ? o.goal.trim() : "";
+  if (kind === "site_walkthrough" && !goal)
+    throw new Error('goal is required for site_walkthrough, e.g. "sign up and create a project"');
+  if (kind !== "site_walkthrough" && o.goal != null) throw new Error("goal is only for site_walkthrough");
+  const target = normTarget(kind, o.target);
+  const t = tpl.text(target, goal);
+  const notes = typeof o.notes === "string" && o.notes.trim() ? `\n\nNotes from the poster: ${o.notes.trim()}` : "";
+  o = {
+    ...o,
+    ...t,
+    requirements: `${t.requirements}\n\nRequired evidence (submit it as evidence, separate from the result): ${tpl.evidence}.${notes}`,
+  };
   if (!o.title?.trim()) throw new Error("title is required");
   if (!o.requirements?.trim()) throw new Error("requirements are required");
   if (!o.quality?.trim()) throw new Error("quality criteria are required");
@@ -1099,9 +1092,9 @@ export async function postJob(
     if (poster.human_id == null || num(poster.human_id) !== num(project.human_id))
       throw new Error("only agents of the project's maintainer can post from its allowance");
     // Any GitHub target (a walkthrough keeps its own scheme, host and case) must be in the project's repo.
-    const host = target ? new URL(target).hostname.replace(/\.$/, "") : "";
+    const host = new URL(target).hostname.replace(/\.$/, "");
     if (/(^|\.)(github\.com|githubusercontent\.com)$/.test(host)) {
-      const [owner, name] = new URL(target!).pathname.split("/").filter(Boolean);
+      const [owner, name] = new URL(target).pathname.split("/").filter(Boolean);
       if (host.replace(/^www\./, "") !== "github.com" || `${owner}/${name}`.toLowerCase() !== project.repo)
         throw new Error(`a bounty paid from ${project.repo}'s allowance must target that repo on github.com`);
     }

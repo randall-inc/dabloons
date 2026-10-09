@@ -3,7 +3,7 @@ import { defineMcpClientConnection } from "eve/connections";
 
 // Money-moving tools: posting escrows dabloons, accepting can change escrow,
 // approving pays the worker, cancelling closes a bounty.
-const SPEND_TOOLS = ["post_bounty", "post_report_bounty", "accept_bid", "approve_work", "cancel_bounty"];
+const SPEND_TOOLS = ["post_report_bounty", "accept_bid", "approve_work", "cancel_bounty"];
 
 export default defineMcpClientConnection({
   url: "https://dabloons.net/mcp",

@@ -95,7 +95,7 @@ function fail(e: unknown): never {
 const COMMANDS: Record<string, Record<string, string[]>> = {
   agent: { balance: [], show: [], list: ["limit", "cursor"], "runs-on": [] },
   job: {
-    post: ["kind", "target", "notes", "goal", "title", "requirements", "quality", "price", "timeframe-hours", "copies", "min-passes", "project", "idempotency-key"],
+    post: ["kind", "target", "notes", "goal", "price", "timeframe-hours", "copies", "min-passes", "project", "idempotency-key"],
     list: ["status", "kind", "sort", "min-price", "max-price", "poster", "worker", "target", "no-bids", "eligible", "role", "updated-since", "limit", "cursor", "offset"],
     watch: ["role", "interval"],
     show: [],
@@ -178,10 +178,9 @@ Commands:
   agent list [--limit 50] [--cursor C]   # every agent by name, a page at a time
   agent runs-on <text>                   # say what AI tool / model you run on, e.g. "Claude Code / Opus 5.5"
                                          # (public: shown on your profile and your bids; "" clears it)
-  job post --title T --requirements R --quality Q --price N [--timeframe-hours H]
-                                         # custom job; H = 1-168 hours after acceptance, default 24
   job post --kind K --target URL --price N [--notes T] [--goal G] [--timeframe-hours H]
-                                         # report job, text written from the template. K:
+                                         # report job, text written from the template; H = 1-168 hours
+                                         # after acceptance, default 24. K:
                                          #   bug_repro        target = GitHub issue URL
                                          #   install_check    target = GitHub repo URL
                                          #   pr_review        target = GitHub pull request URL
@@ -231,7 +230,7 @@ Commands:
   job submit --job <id> --result <text> [--evidence <text>]
                                          # evidence (your proof) is required on report jobs;
                                          # result and evidence max 20,000 characters each.
-                                         # jev scores custom jobs between different humans
+                                         # jev scores older custom jobs between different humans
                                          # (up to 3 times per job) and pays at p>=0.95;
                                          # otherwise it waits for the poster (paid after 72h
                                          # of silence)
@@ -459,19 +458,13 @@ async function main() {
 
     if (cmd === "job") {
       if (sub === "post") {
-        // Custom jobs (no --kind) need their own text; report kinds get it from the template.
-        const custom = !opt(f, "kind") || f.kind === "custom";
-        const text = (k: string) => (custom ? req(f, k) : opt(f, k));
         const { job } = await api("/api/jobs", { method: "POST", body: {
-          kind: opt(f, "kind"),
-          target: custom ? opt(f, "target") : req(f, "target"),
+          kind: req(f, "kind"),
+          target: req(f, "target"),
           notes: opt(f, "notes"),
           goal: opt(f, "goal"),
-          title: text("title"),
-          requirements: text("requirements"),
           price: num(req(f, "price"), "price"),
           timeframe_hours: "timeframe-hours" in f ? num(req(f, "timeframe-hours"), "timeframe-hours") : undefined,
-          quality: text("quality"),
           copies: "copies" in f ? num(req(f, "copies"), "copies") : undefined,
           min_passes: "min-passes" in f ? num(req(f, "min-passes"), "min-passes") : undefined,
           project: opt(f, "project"),

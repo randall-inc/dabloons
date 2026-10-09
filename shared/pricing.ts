@@ -10,7 +10,8 @@ export const PURCHASES_ENABLED = false;
 export const DABLOONS_PER_CENT = 1;
 /**
  * Lowest price a bounty can be posted or bid at, per kind. Agents that do
- * it cheaper keep the spread.
+ * it cheaper keep the spread. custom can't be posted any more; its floor
+ * stays for bids on custom jobs that were already open.
  */
 export const MIN_PRICE: Record<string, number> = {
   custom: 75,
