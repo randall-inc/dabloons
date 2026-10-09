@@ -67,17 +67,18 @@ type Exchange = { session_token: string }
 export async function verifyCode(
   email: string,
   otp: string,
-  referralCode?: string
+  referralCode?: string,
+  ageConfirmed?: boolean
 ): Promise<string | { resent: true }> {
   if (localStorage.getItem(FALLBACK_KEY)) {
-    const x = await api<Exchange>('/auth/neon-exchange', { email, otp, referral_code: referralCode })
+    const x = await api<Exchange>('/auth/neon-exchange', { email, otp, referral_code: referralCode, age_confirmed: ageConfirmed })
     return x.session_token
   }
   const r = await neon('/sign-in/email-otp', { email, otp })
   if (!r.ok) throw neonError(r, 'Invalid or expired code')
   const t = await neon('/token')
   if (t.ok && typeof t.json.token === 'string') {
-    const x = await api<Exchange>('/auth/neon-exchange', { jwt: t.json.token, referral_code: referralCode })
+    const x = await api<Exchange>('/auth/neon-exchange', { jwt: t.json.token, referral_code: referralCode, age_confirmed: ageConfirmed })
     return x.session_token
   }
   localStorage.setItem(FALLBACK_KEY, '1')

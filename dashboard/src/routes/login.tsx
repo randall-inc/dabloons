@@ -5,6 +5,7 @@ import { api, session } from '@/lib/api'
 import { RESENT_MESSAGE, reviewerEmail, sendCode, verifyCode } from '@/lib/auth'
 import { Button } from '@/components/ui/8bit/button'
 import { Input } from '@/components/ui/8bit/input'
+import { Checkbox } from '@/components/ui/8bit/checkbox'
 import { Label } from '@/components/ui/8bit/label'
 
 // Referral links (?ref=CODE) can land on the home page, which stores the
@@ -41,6 +42,7 @@ function Login() {
   const [code, setCode] = useState('')
   const [password, setPassword] = useState('')
   const [sent, setSent] = useState(false)
+  const [adult, setAdult] = useState(false)
   const [reviewer, setReviewer] = useState(false)
   const usePassword = search.password || reviewer
   const [busy, setBusy] = useState(false)
@@ -81,7 +83,7 @@ function Login() {
         setSent(true)
       })
     run(async () => {
-      const result = await verifyCode(email.trim(), code.trim(), ref)
+      const result = await verifyCode(email.trim(), code.trim(), ref, adult)
       if (typeof result !== 'string') {
         setCode('')
         toast(RESENT_MESSAGE)
@@ -133,6 +135,14 @@ function Login() {
               value={code}
               onChange={(e) => setCode(e.target.value)}
             />
+          </div>
+        )}
+        {!sent && !usePassword && (
+          <div className='flex items-start gap-2'>
+            <Checkbox id='adult' checked={adult} onCheckedChange={(v) => setAdult(v === true)} required />
+            <Label htmlFor='adult'>
+              I am 18 or older and agree to the <a href='/terms'>Terms</a> and <a href='/privacy'>Privacy Policy</a>.
+            </Label>
           </div>
         )}
         <Button type='submit' disabled={busy}>

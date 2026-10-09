@@ -1955,10 +1955,11 @@ async function payReferralBonus(tx: TxDb, humanId: number) {
  * Matches by auth_user_id first, then by normalized email: a pre-Neon row,
  * or the same inbox under an alias (you+tag@gmail.com signs in to
  * you@gmail.com). A genuinely new, referred human gets the referral bonus.
+ * A new account requires adultConfirmed (the 18+ checkbox).
  */
 export async function findOrCreateHumanByAuthId(
   db: Db,
-  o: { authUserId: string; email: string; name?: string; referralCode?: string }
+  o: { authUserId: string; email: string; name?: string; referralCode?: string; adultConfirmed?: boolean }
 ) {
   if (!o.authUserId) throw new Error("missing auth user id");
   return db.transaction(async (tx) => {
@@ -1978,6 +1979,8 @@ export async function findOrCreateHumanByAuthId(
       return { human: normHuman(rows[0]), created: false as const };
     }
 
+    // Dabloons is 18+: a new account needs the signer's confirmation.
+    if (!o.adultConfirmed) throw new Error("confirm you are 18 or older to create an account");
     const { human } = await createHumanWithFallbackHandle(tx, {
       email: o.email,
       handle: handleFromName(o.name),

@@ -319,7 +319,8 @@ export function createApp(deps: Deps<any>) {
   const signIn = async (
     c: any,
     who: { id: string; email: string; name?: string },
-    referral_code: unknown
+    referral_code: unknown,
+    adultConfirmed = false
   ) => {
     const db = c.get("db");
     const r = await core.findOrCreateHumanByAuthId(db, {
@@ -327,6 +328,7 @@ export function createApp(deps: Deps<any>) {
       email: who.email,
       name: who.name,
       referralCode: referral_code ? String(referral_code) : undefined,
+      adultConfirmed,
     });
     const s = await core.createBoardSession(db, r.human.id);
     return c.json({
@@ -342,6 +344,8 @@ export function createApp(deps: Deps<any>) {
   // again returns the same human with created:false. Only a referred first
   // signup earns: pass referral_code to credit both sides 100 dabloons
   // (referrer capped at 20 rewarded referrals); no code, no bonus.
+  // Creating a new account (not signing in to one) also needs
+  // "age_confirmed": true — the signer is 18 or older, per the Terms.
   //   {jwt}         primary: a JWT from Neon's GET /token, verified locally
   //                 against Neon's JWKS — no call to Neon per sign-in.
   //   {email, otp}  fallback for browsers that can't get a JWT (third-party
@@ -351,7 +355,7 @@ export function createApp(deps: Deps<any>) {
   app.post("/api/auth/neon-exchange", async (c) => {
     const base = c.env.NEON_AUTH_BASE_URL as string | undefined;
     if (!base) return c.json({ ok: false, error: "auth not configured" }, 503);
-    const { jwt, email, otp, referral_code } = await c.req.json().catch(() => ({} as any));
+    const { jwt, email, otp, referral_code, age_confirmed } = await c.req.json().catch(() => ({} as any));
     let nu: neonAuth.NeonUser | null;
     if (jwt && typeof jwt === "string") {
       try {
@@ -381,7 +385,7 @@ export function createApp(deps: Deps<any>) {
       nu = r;
       if (!nu) return c.json({ ok: false, error: "invalid or expired code" }, 401);
     }
-    return signIn(c, nu, referral_code);
+    return signIn(c, nu, referral_code, age_confirmed === true);
   });
 
   // Password sign-in for the one app-directory reviewer account (directory
@@ -408,7 +412,7 @@ export function createApp(deps: Deps<any>) {
     );
     const passwordOk = safeEqual(await core.hashToken(str(password)), await core.hashToken(wantPassword));
     if (!emailOk || !passwordOk) return c.json({ ok: false, error: "invalid email or password" }, 401);
-    return signIn(c, { id: "reviewer:" + wantEmail, email: wantEmail }, referral_code);
+    return signIn(c, { id: "reviewer:" + wantEmail, email: wantEmail }, referral_code, true);
   });
 
   // Public Neon Auth base URL for the dashboard's sign-in page, plus the
