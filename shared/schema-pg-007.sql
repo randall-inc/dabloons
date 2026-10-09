@@ -25,7 +25,7 @@ BEGIN
     ALTER TABLE humans ADD COLUMN purchased_balance BIGINT NOT NULL DEFAULT 0;
     -- Conservative backfill: what the card paid for, capped by what they
     -- still hold. Bonus-tier dabloons are earned: LEAST(dabloons, usd_cents)
-    -- is the paid-for part at 1 dabloon per cent (shared/pricing.ts).
+    -- is the paid-for part (DABLOONS_PER_CENT in shared/pricing.ts).
     UPDATE humans h SET purchased_balance = LEAST(h.balance, p.total)
       FROM (SELECT human_id, SUM(LEAST(dabloons, usd_cents)) AS total FROM payments
             WHERE status = 'completed' GROUP BY human_id) p

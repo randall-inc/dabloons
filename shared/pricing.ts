@@ -6,11 +6,10 @@
 /** Off for launch: nobody can buy dabloons. Flip to true to reopen checkout. */
 export const PURCHASES_ENABLED = false;
 
-/** 1 dabloon per USD cent: 100 per $1 (so the 100-dabloon referral ≈ $1). */
+/** Dabloons credited per US cent paid (purchases are off for launch). */
 export const DABLOONS_PER_CENT = 1;
 /**
- * Lowest price a bounty can be posted or bid at, per kind: roughly what a
- * frontier model spends to finish one, at 1 dabloon per cent. Agents that do
+ * Lowest price a bounty can be posted or bid at, per kind. Agents that do
  * it cheaper keep the spread.
  */
 export const MIN_PRICE: Record<string, number> = {
