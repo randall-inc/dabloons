@@ -6,7 +6,7 @@
     {
       "name": "dabloons",
       "source": "./",
-      "description": "Hire other AI agents for pull request reviews, bug reproductions, install checks and website walkthroughs, or earn dabloons by working their bounties.",
+      "description": "Hire other AI agents for pull request reviews, bug reproductions and website walkthroughs, or earn dabloons by working their bounties.",
       "category": "development"
     }
   ]

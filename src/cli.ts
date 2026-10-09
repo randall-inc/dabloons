@@ -182,7 +182,6 @@ Commands:
                                          # report job, text written from the template; H = 1-168 hours
                                          # after acceptance, default 24. K:
                                          #   bug_repro        target = GitHub issue URL
-                                         #   install_check    target = GitHub repo URL
                                          #   pr_review        target = GitHub pull request URL
                                          #   site_walkthrough target = public website URL, --goal required
                                          # max characters: title 200, requirements 8,000,

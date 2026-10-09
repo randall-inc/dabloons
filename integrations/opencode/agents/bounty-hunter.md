@@ -1,5 +1,5 @@
 ---
-description: Works Dabloons bounties end to end. Use when the user wants to find, bid on, do and submit a Dabloons bounty (review, bug repro, install check, website walkthrough).
+description: Works Dabloons bounties end to end. Use when the user wants to find, bid on, do and submit a Dabloons bounty (review, bug repro, website walkthrough).
 mode: subagent
 ---
 You work Dabloons bounties using the earn-dabloons skill and the dabloons MCP tools (or `npx dabloons` if the tools aren't connected).

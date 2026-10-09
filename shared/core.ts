@@ -871,8 +871,9 @@ export async function setRunsOn(db: Db, name: string, runsOn: unknown, via?: str
  * (plus optional notes, and a goal for site_walkthrough) and the server writes
  * the job text. Submissions must carry evidence, and jev doesn't judge them:
  * payment waits for the poster (or POSTER_SILENCE_HOURS of silence).
- * custom (free-form, jev auto-release) can no longer be posted; jobs posted
- * before that stay in the database and settle as they always did.
+ * custom (free-form, jev auto-release) and install_check can no longer be
+ * posted; jobs posted before that stay in the database and settle as they
+ * always did.
  */
 
 type Template = {
@@ -909,18 +910,6 @@ export const JOB_KINDS: Record<string, Template> = {
         "The result says clearly whether the bug reproduced, on which version and in which environment. Every claim is backed by the evidence (exact commands and observed output). Nothing is made up.",
     }),
   },
-  install_check: {
-    target: "a public GitHub repository URL, https://github.com/OWNER/REPO",
-    path: /^(\/[\w.-]+\/[\w.-]+?)(?:\.git)?\/?$/,
-    evidence:
-      "every command you ran, in order, each with its full output, plus your environment (OS or image, runtime versions) and the commit you tested",
-    text: (t) => ({
-      title: `Install check ${bare(t)}`,
-      requirements: `Follow the README / quickstart of ${t} as a brand-new user on a clean environment (a fresh container or VM with nothing preinstalled beyond what the docs ask for). Report every place it breaks, is unclear, or differs from what the docs say — or confirm it works end to end. ${NO_CHANGES}`,
-      quality:
-        "Every break or confusing step is listed with where in the docs it happened and what went wrong. Every claim is backed by the evidence (commands and their output). Nothing is made up.",
-    }),
-  },
   pr_review: {
     target: "a public GitHub pull request URL, https://github.com/OWNER/REPO/pull/N",
     path: /^(\/[\w.-]+\/[\w.-]+\/pull\/\d+)(?:\/(?:files|commits|checks))?\/?$/,
@@ -947,6 +936,8 @@ export const JOB_KINDS: Record<string, Template> = {
 };
 
 const KIND_NAMES = Object.keys(JOB_KINDS).join(", ");
+/** Kinds that can no longer be posted; their existing jobs still list, bid and settle. */
+const RETIRED_KINDS = ["custom", "install_check"];
 
 /** A template's target as a clean URL: GitHub kinds canonical and lowercased, others http(s) without a fragment. */
 function normTarget(kind: string, raw: unknown): string {
@@ -1192,7 +1183,7 @@ export async function listJobs(db: TxDb, q: Query, me?: { name: string; human_id
   if (after && offset) throw new Error("use cursor or offset, not both (offset is deprecated)");
   const { status, kind, role } = q;
   if (status && !JOB_STATUSES.includes(status)) throw new Error(`status must be one of: ${JOB_STATUSES.join(", ")}`);
-  if (kind && kind !== "custom" && !Object.hasOwn(JOB_KINDS, kind)) throw new Error(`kind must be one of: ${KIND_NAMES}`);
+  if (kind && !RETIRED_KINDS.includes(kind) && !Object.hasOwn(JOB_KINDS, kind)) throw new Error(`kind must be one of: ${KIND_NAMES}`);
   const minPrice = intParam(q, "min_price", 0, Number.MAX_SAFE_INTEGER, ", 0 or more");
   const maxPrice = intParam(q, "max_price", 0, Number.MAX_SAFE_INTEGER, ", 0 or more");
   if (minPrice != null && maxPrice != null && minPrice > maxPrice) throw new Error("min_price can't be above max_price");

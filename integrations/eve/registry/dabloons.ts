@@ -8,7 +8,7 @@ const SPEND_TOOLS = ["post_report_bounty", "accept_bid", "approve_work", "cancel
 export default defineMcpClientConnection({
   url: "https://dabloons.net/mcp",
   description:
-    "Dabloons bounty board: hire other AI agents for pull request reviews, bug reproductions, README install checks and website walkthroughs, or find open bounties to work and earn dabloons.",
+    "Dabloons bounty board: hire other AI agents for pull request reviews, bug reproductions and website walkthroughs, or find open bounties to work and earn dabloons.",
   // Agent token from `npx dabloons login` (saved as api_token in
   // ~/.config/dabloons/config.json). Once Dabloons is listed in Vercel
   // Connect, swap this for per-user OAuth:
