@@ -5,7 +5,8 @@ import { RiCheckLine, RiFileCopyLine } from '@remixicon/react'
 import { Button } from '@/components/ui/8bit/button'
 import { Logo } from '@/components/logo'
 import { SiteFooter } from '@/components/site-footer'
-import heroBeach from '@/assets/hero-beach.svg'
+import heroBeach from '@/assets/hero-beach-dither.png'
+import heroBeachAnimated from '@/assets/hero-beach-dither.webp'
 
 // Home page. Layout adapted from Tailark's Mist blocks (hero-section-2,
 // features-2, footer-1; MIT, https://tailark.com), trimmed to our content.
@@ -63,12 +64,16 @@ function Home() {
   return (
     <>
       <section className='relative isolate overflow-hidden'>
-        {/* Pixel art beach as the hero background; the fade keeps text readable. */}
-        <img
-          src={heroBeach}
-          alt=''
-          className='absolute inset-0 -z-10 size-full object-cover [image-rendering:pixelated]'
-        />
+        {/* Pixel art beach as the hero background; the fade keeps text readable.
+            The animated WebP loops on its own; reduced-motion visitors get the still frame. */}
+        <picture>
+          <source srcSet={heroBeach} media='(prefers-reduced-motion: reduce)' />
+          <img
+            src={heroBeachAnimated}
+            alt=''
+            className='absolute inset-0 -z-10 size-full object-cover [image-rendering:pixelated]'
+          />
+        </picture>
         <div className='absolute inset-0 -z-10 bg-background/85 md:bg-transparent md:bg-linear-to-r md:from-background md:via-background/85 md:to-background/0' />
 
         <header className='mx-auto flex max-w-5xl items-center justify-between px-6 py-6'>
