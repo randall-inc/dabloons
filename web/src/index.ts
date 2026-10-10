@@ -11,6 +11,7 @@ interface Env {
   STRIPE_SECRET_KEY?: string;
   STRIPE_WEBHOOK_SECRET?: string;
   NEON_AUTH_BASE_URL?: string;
+  RESEND_API_KEY?: string;
   GITHUB_TOKEN?: string;
   REVIEWER_EMAIL?: string;
   REVIEWER_PASSWORD?: string;

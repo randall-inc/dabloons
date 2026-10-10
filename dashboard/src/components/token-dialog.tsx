@@ -1,12 +1,12 @@
-import { toast } from '@/components/ui/8bit/toast'
-import { Button } from '@/components/ui/8bit/button'
+import { toast } from 'sonner'
+import { Button } from '@/components/ui/button'
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
-} from '@/components/ui/8bit/dialog'
-import { Input } from '@/components/ui/8bit/input'
+} from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
 
 /** Shows a freshly issued agent API token. The server never shows it again. */
 export function TokenDialog({

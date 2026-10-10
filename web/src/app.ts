@@ -7,6 +7,7 @@ import { llmsTxt } from "./llms.ts";
 import { routineTxt } from "./routine.ts";
 import { legalPages } from "./legal.ts";
 import * as neonAuth from "./neon-auth.ts";
+import * as email from "./email.ts";
 import * as stripe from "./stripe.ts";
 import * as github from "./github.ts";
 import * as pricing from "../../shared/pricing.ts";
@@ -200,8 +201,8 @@ export function createApp(deps: Deps<any>) {
    * and who is the owner: agent writes count against the agent's human, so
    * one human's agents share one budget per route instead of getting one
    * each (an agent with no human counts on its own); human routes key by
-   * human id; anonymous ones by client IP. Not applied to the Stripe webhook
-   * (signed, Stripe retries), admin routes, or /api/health.
+   * human id; anonymous ones by client IP. Not applied to the Stripe or Neon Auth webhooks
+   * (signed, their senders retry), admin routes, or /api/health.
    */
   const byIp = (c: any) => "ip:" + (c.req.header("cf-connecting-ip") || "unknown");
   const byOwner = (c: any) => {
@@ -347,6 +348,34 @@ export function createApp(deps: Deps<any>) {
       human: await account(db, r.human),
     });
   };
+
+  // Neon Auth's send.otp webhook: Neon hands us each emailed sign-in code
+  // and skips its own plain email, and we send the branded one (emails/)
+  // through Resend. Any non-2xx makes Neon retry (up to 3 tries in 15s,
+  // same event id, which Resend dedupes) and then fail the sign-in.
+  app.post("/api/webhooks/neon-auth", async (c) => {
+    const base = c.env.NEON_AUTH_BASE_URL as string | undefined;
+    const resendKey = c.env.RESEND_API_KEY as string | undefined;
+    if (!base || !resendKey) return c.json({ ok: false, error: "email not configured" }, 503);
+    const event = await neonAuth.verifyWebhook(base, new Uint8Array(await c.req.arrayBuffer()), {
+      signature: c.req.header("x-neon-signature"),
+      kid: c.req.header("x-neon-signature-kid"),
+      timestamp: c.req.header("x-neon-timestamp"),
+    });
+    if (!event) return c.json({ ok: false, error: "bad signature" }, 401);
+    const data = event.event_data;
+    if (event.event_type !== "send.otp" || data?.delivery_preference === "sms")
+      return c.json({ ok: true, ignored: true });
+    if (!event.user?.email || !/^\d{4,10}$/.test(String(data?.otp_code ?? "")))
+      return c.json({ ok: false, error: "missing email or code" }, 400);
+    await email.sendSignInCode(resendKey, {
+      to: String(event.user.email),
+      code: String(data.otp_code),
+      expiresAt: data.expires_at,
+      idempotencyKey: `neon-otp-${event.event_id}`,
+    });
+    return c.json({ ok: true });
+  });
 
   // Trade a Neon Auth sign-in for a board session. Idempotent: signing in
   // again returns the same human with created:false. Only a referred first

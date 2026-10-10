@@ -1,7 +1,7 @@
 import { Area, AreaChart } from 'recharts'
 import { cn } from '@/lib/utils'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/8bit/card'
-import { type ChartConfig, ChartContainer } from '@/components/ui/8bit/chart'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { type ChartConfig, ChartContainer } from '@/components/ui/chart'
 
 export type StatCardData = {
   label: string

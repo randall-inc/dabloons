@@ -2,13 +2,13 @@ import { useEffect, useState } from 'react'
 import { Link, createFileRoute } from '@tanstack/react-router'
 import { session } from '@/lib/api'
 import { RiCheckLine, RiFileCopyLine } from '@remixicon/react'
-import { Button } from '@/components/ui/8bit/button'
-import { Logo } from '@/components/logo'
+import { Button } from '@/components/ui/button'
 import { SiteFooter } from '@/components/site-footer'
 import heroDusk from '@/assets/hero-halloween-light-dither.png'
 import heroDuskAnimated from '@/assets/hero-halloween-light-dither.webp'
 import heroNight from '@/assets/hero-halloween-dark-dither.png'
 import heroNightAnimated from '@/assets/hero-halloween-dark-dither.webp'
+import { Wordmark } from '@/components/wordmark'
 
 // Home page. Layout adapted from Tailark's Mist blocks (hero-section-2,
 // features-2, footer-1; MIT, https://tailark.com), trimmed to our content.
@@ -67,7 +67,7 @@ function Home() {
     <>
       <section className='relative isolate overflow-hidden'>
         {/* Halloween pixel art as the hero background: a golden-afternoon skull island in
-            light mode, a moonlit ghost ship in dark mode. The fade keeps text readable.
+            light mode, a moonlit ghost ship in dark mode. The vignette keeps text readable.
             The animated WebPs loop on their own; reduced-motion visitors get the still frame. */}
         <picture className='dark:hidden'>
           <source srcSet={heroDusk} media='(prefers-reduced-motion: reduce)' />
@@ -85,10 +85,9 @@ function Home() {
             className='absolute inset-0 -z-10 size-full object-cover [image-rendering:pixelated]'
           />
         </picture>
-        <div className='absolute inset-0 -z-10 bg-background/85 md:bg-transparent md:bg-linear-to-r md:from-background md:via-background/85 md:to-background/0' />
+        <div className='absolute inset-0 -z-10 bg-[radial-gradient(ellipse_at_center,color-mix(in_oklch,var(--background)_60%,transparent)_0%,color-mix(in_oklch,var(--background)_75%,transparent)_45%,var(--background)_100%)]' />
 
-        <header className='mx-auto flex max-w-5xl items-center justify-between px-6 py-6'>
-          <Logo />
+        <header className='mx-auto flex max-w-5xl items-center justify-end px-6 py-6'>
           <Button asChild variant='ghost' size='sm'>
             {session.get() ? (
               <Link to='/dashboard'>Dashboard</Link>
@@ -100,14 +99,11 @@ function Home() {
           </Button>
         </header>
 
-        <div className='mx-auto max-w-5xl px-6 pt-20 pb-32 md:pt-28 md:pb-44'>
-          <h1 className='max-w-2xl text-4xl font-bold tracking-tight text-balance sm:text-6xl'>
-            Turn Expiring Usage into OSS Contributions
+        <div className='mx-auto flex w-fit max-w-5xl flex-col items-center px-6 pt-20 pb-32 md:pt-28 md:pb-44'>
+          <h1 className='max-w-2xl text-center text-4xl font-medium tracking-tight text-balance sm:text-6xl'>
+            Turn expiring usage into
+            <Wordmark className='mt-2 justify-center' />
           </h1>
-          <p className='mt-6 max-w-xl text-lg text-balance text-muted-foreground'>
-            Let your agent reproduce bugs, give a second opinion on PRs, test onboarding
-            flows, or red team projects; all with your included usage.
-          </p>
           <Install docs={docs} />
         </div>
       </section>
@@ -161,19 +157,21 @@ function Install({ docs }: { docs: string }) {
   }
 
   return (
-    <div className='mt-10 grid max-w-xl justify-items-start gap-4 rounded-md border bg-background/80 p-4 backdrop-blur-sm'>
+    <div className='mt-10 max-w-xl divide-y rounded-md border bg-background/80 backdrop-blur-sm'>
       <button
         type='button'
         onClick={copy}
         aria-label='Copy prompt for your agent'
-        className='text-left font-mono text-sm'
+        className='block p-4 text-left font-mono text-sm'
       >
         {prompt}
       </button>
-      <Button onClick={copy}>
-        {copied ? <RiCheckLine /> : <RiFileCopyLine />}
-        {copied ? 'Copied' : 'Copy prompt'}
-      </Button>
+      <div className='p-4'>
+        <Button onClick={copy}>
+          {copied ? <RiCheckLine /> : <RiFileCopyLine />}
+          {copied ? 'Copied' : 'Copy prompt'}
+        </Button>
+      </div>
     </div>
   )
 }

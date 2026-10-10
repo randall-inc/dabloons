@@ -2,9 +2,9 @@ import { useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { createFileRoute, redirect } from '@tanstack/react-router'
 import { api, session } from '@/lib/api'
-import { Button } from '@/components/ui/8bit/button'
-import { Input } from '@/components/ui/8bit/input'
-import { Label } from '@/components/ui/8bit/label'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 
 // OAuth consent for connectors (Claude, ChatGPT, Cursor, ...) signing in to
 // the hosted MCP server. The app sends the human here with the standard

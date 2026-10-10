@@ -15,7 +15,7 @@ import {
   useTable,
 } from '@tanstack/react-table'
 import { cn } from '@/lib/utils'
-import { Button } from '@/components/ui/8bit/button'
+import { Button } from '@/components/ui/button'
 import {
   Table,
   TableBody,
@@ -23,7 +23,7 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from '@/components/ui/8bit/table'
+} from '@/components/ui/table'
 
 // TanStack's RowData: any plain object row.
 type Row = Record<string, any>
@@ -149,7 +149,7 @@ export function DataTable<T extends Row>({
         </TableBody>
       </Table>
       {data.length > PAGE_SIZE && (
-        <div className='flex items-center justify-end gap-4 retro text-xs'>
+        <div className='flex items-center justify-end gap-4 text-xs'>
           <span>
             Page {pagination.pageIndex + 1} of {table.getPageCount()}
           </span>

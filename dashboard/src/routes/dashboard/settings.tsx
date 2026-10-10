@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
-import { toast } from '@/components/ui/8bit/toast'
+import { toast } from 'sonner'
 import { api, session, useMe } from '@/lib/api'
-import { Button } from '@/components/ui/8bit/button'
-import { Input } from '@/components/ui/8bit/input'
-import { Label } from '@/components/ui/8bit/label'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 
 export const Route = createFileRoute('/dashboard/settings')({
   component: Settings,

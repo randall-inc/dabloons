@@ -2,17 +2,17 @@ import { useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { formatNumber } from '@/lib/utils'
-import { Button } from '@/components/ui/8bit/button'
+import { Button } from '@/components/ui/button'
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-} from '@/components/ui/8bit/dialog'
-import { Input } from '@/components/ui/8bit/input'
-import { Label } from '@/components/ui/8bit/label'
-import { RadioGroup, RadioGroupItem } from '@/components/ui/8bit/radio-group'
+} from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import {
   MAX_USD_CENTS,
   MIN_USD_CENTS,

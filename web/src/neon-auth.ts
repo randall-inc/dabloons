@@ -150,3 +150,58 @@ export async function verifyJwt(
     emailVerified: true,
   };
 }
+
+/* ---------- webhooks (send.otp) ---------- */
+
+const toB64url = (bytes: Uint8Array) => {
+  let s = "";
+  for (const b of bytes) s += String.fromCharCode(b);
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+};
+
+/**
+ * Verify a Neon Auth webhook: X-Neon-Signature is a detached EdDSA JWS
+ * (header..signature) over timestamp + "." + base64url(raw body), signed by
+ * a key in the same JWKS as the JWTs and named by X-Neon-Signature-Kid.
+ * Returns the parsed event, or null if the signature, key or timestamp
+ * (more than 5 minutes off) doesn't check out. Throws only if the JWKS
+ * can't be fetched at all.
+ */
+export async function verifyWebhook(
+  baseUrl: string,
+  rawBody: Uint8Array,
+  headers: { signature?: string; kid?: string; timestamp?: string },
+  now = Date.now()
+): Promise<any | null> {
+  const base = baseUrl.replace(/\/+$/, "");
+  const { signature, kid, timestamp } = headers;
+  if (!signature || !kid || !timestamp || !/^\d+$/.test(timestamp)) return null;
+  if (Math.abs(now - Number(timestamp)) > 5 * 60_000) return null;
+  const parts = signature.split(".");
+  if (parts.length !== 3 || parts[1] !== "") return null;
+  const jwk = (await jwks(base, kid, now)).find(
+    (k) => k.kid === kid && k.kty === "OKP" && k.crv === "Ed25519" && k.x
+  );
+  if (!jwk) return null;
+  const enc = new TextEncoder();
+  const signed = toB64url(enc.encode(`${timestamp}.${toB64url(rawBody)}`));
+  try {
+    const key = await crypto.subtle.importKey(
+      "jwk",
+      { kty: "OKP", crv: "Ed25519", x: jwk.x },
+      { name: "Ed25519" },
+      false,
+      ["verify"]
+    );
+    const ok = await crypto.subtle.verify(
+      { name: "Ed25519" },
+      key,
+      b64url(parts[2]),
+      enc.encode(`${parts[0]}.${signed}`)
+    );
+    if (!ok) return null;
+    return JSON.parse(new TextDecoder().decode(rawBody));
+  } catch {
+    return null;
+  }
+}

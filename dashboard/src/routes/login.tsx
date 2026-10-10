@@ -1,12 +1,27 @@
-import { useState } from 'react'
-import { createFileRoute, redirect, useNavigate } from '@tanstack/react-router'
-import { toast } from '@/components/ui/8bit/toast'
+import { useEffect, useRef, useState } from 'react'
+import { Link, createFileRoute, redirect, useNavigate } from '@tanstack/react-router'
+import { toast } from 'sonner'
 import { api, session } from '@/lib/api'
-import { RESENT_MESSAGE, reviewerEmail, sendCode, verifyCode } from '@/lib/auth'
-import { Button } from '@/components/ui/8bit/button'
-import { Input } from '@/components/ui/8bit/input'
-import { Checkbox } from '@/components/ui/8bit/checkbox'
-import { Label } from '@/components/ui/8bit/label'
+import { RiGithubFill } from '@remixicon/react'
+import {
+  RESENT_MESSAGE,
+  SOCIAL_VERIFIER_PARAM,
+  type SocialProvider,
+  finishSocial,
+  reviewerEmail,
+  sendCode,
+  startSocial,
+  verifyCode,
+} from '@/lib/auth'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { InputOTP, InputOTPGroup, InputOTPSlot } from '@/components/ui/input-otp'
+import { REGEXP_ONLY_DIGITS } from 'input-otp'
+import { Checkbox } from '@/components/ui/checkbox'
+import { Field, FieldGroup, FieldLabel, FieldSeparator } from '@/components/ui/field'
+import loginCove from '@/assets/login-cove-dither.png'
+import loginCoveAnimated from '@/assets/login-cove-dither.webp'
+import { Wordmark } from '@/components/wordmark'
 
 // Referral links (?ref=CODE) can land on the home page, which stores the
 // code under this key, or come straight here.
@@ -45,7 +60,13 @@ function Login() {
   const [adult, setAdult] = useState(false)
   const [reviewer, setReviewer] = useState(false)
   const usePassword = search.password || reviewer
+  // Arriving from `dabloons login`'s link: show its code so the person can
+  // check it matches the one in their terminal before signing in.
+  const deviceCode = search.redirect?.startsWith('/device')
+    ? new URL(search.redirect, window.location.origin).searchParams.get('code')?.toUpperCase()
+    : undefined
   const [busy, setBusy] = useState(false)
+  const formRef = useRef<HTMLFormElement>(null)
 
   async function run(fn: () => Promise<void>) {
     setBusy(true)
@@ -58,10 +79,37 @@ function Login() {
     }
   }
 
-  function signedIn(token: string) {
+  function signedIn(token: string, to = search.redirect) {
     session.set(token)
     localStorage.removeItem(REF_KEY)
-    navigate({ href: search.redirect ?? '/dashboard' })
+    navigate({ href: to ?? '/dashboard' })
+  }
+
+  // Back from GitHub/Google: redeem Neon's verifier (once, even under
+  // StrictMode's double effects), or show the error Neon sent back.
+  const returned = useRef(false)
+  useEffect(() => {
+    if (returned.current) return
+    returned.current = true
+    const params = new URLSearchParams(window.location.search)
+    const verifier = params.get(SOCIAL_VERIFIER_PARAM)
+    if (verifier)
+      run(async () => {
+        const r = await finishSocial(verifier)
+        signedIn(r.token, r.redirect)
+      })
+    else if (params.get('error')) toast("Couldn't sign in. Try again.")
+  }, [])
+
+  const social = (provider: SocialProvider) => {
+    if (!adult) return toast('Confirm you are 18 or older first.')
+    run(() =>
+      startSocial(provider, {
+        redirect: search.redirect,
+        ref: search.ref ?? localStorage.getItem(REF_KEY) ?? undefined,
+        ageConfirmed: adult,
+      })
+    )
   }
 
   const onSubmit = (e: React.FormEvent) => {
@@ -93,62 +141,115 @@ function Login() {
     })
   }
 
+  // Layout from shadcn's signup-02 block: form on the left, cover art on the right.
   return (
-    <main className='mx-auto flex min-h-svh max-w-sm flex-col justify-center gap-6 p-6'>
-      <h1>Sign in or create account</h1>
-      <form onSubmit={onSubmit} className='grid gap-4'>
-        <div className='grid gap-2'>
-          <Label htmlFor='email'>Email</Label>
-          <Input
-            id='email'
-            type='email'
-            autoComplete='email'
-            required
-            disabled={sent || reviewer}
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-          />
+    <main className='grid min-h-svh lg:grid-cols-2'>
+      <div className='flex flex-col gap-4 p-6 md:p-10'>
+        <div className='flex justify-center md:justify-start'>
+          <Link to='/' aria-label='Dabloons home' className='text-2xl'>
+            <Wordmark />
+          </Link>
         </div>
-        {usePassword && (
-          <div className='grid gap-2'>
-            <Label htmlFor='password'>Password</Label>
-            <Input
-              id='password'
-              type='password'
-              autoComplete='current-password'
-              required
-              autoFocus={reviewer}
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
-          </div>
-        )}
-        {sent && (
-          <div className='grid gap-2'>
-            <Label htmlFor='code'>Code</Label>
-            <Input
-              id='code'
-              inputMode='numeric'
-              autoComplete='one-time-code'
-              required
-              autoFocus
-              value={code}
-              onChange={(e) => setCode(e.target.value)}
-            />
-          </div>
-        )}
-        {!sent && !usePassword && (
-          <div className='flex items-start gap-2'>
-            <Checkbox id='adult' checked={adult} onCheckedChange={(v) => setAdult(v === true)} required />
-            <Label htmlFor='adult'>
-              I am 18 or older and agree to the <a href='/terms'>Terms</a> and <a href='/privacy'>Privacy Policy</a>.
-            </Label>
-          </div>
-        )}
-        <Button type='submit' disabled={busy}>
-          {sent || usePassword ? 'Sign in' : 'Send code'}
-        </Button>
-      </form>
+        <div className='flex flex-1 items-center justify-center'>
+          <form ref={formRef} onSubmit={onSubmit} className='w-full max-w-xs'>
+            <FieldGroup>
+              <h1 className='text-center text-2xl font-bold text-balance'>
+                {sent ? 'Enter the code from your Email' : 'Sign in or create account'}
+              </h1>
+              {deviceCode && (
+                <p className='text-center text-sm text-muted-foreground'>
+                  Linking the agent showing code{' '}
+                  <span className='font-mono font-medium text-foreground'>{deviceCode}</span>
+                </p>
+              )}
+              <Field>
+                <FieldLabel htmlFor='email'>Email</FieldLabel>
+                <Input
+                  id='email'
+                  type='email'
+                  autoComplete='email'
+                  required
+                  disabled={sent || reviewer}
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                />
+              </Field>
+              {usePassword && (
+                <Field>
+                  <FieldLabel htmlFor='password'>Password</FieldLabel>
+                  <Input
+                    id='password'
+                    type='password'
+                    autoComplete='current-password'
+                    required
+                    autoFocus={reviewer}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                  />
+                </Field>
+              )}
+              {sent && (
+                <Field>
+                  <FieldLabel htmlFor='code'>Code</FieldLabel>
+                  {/* Neon emails a 6-digit code; a full code submits on its own. */}
+                  <InputOTP
+                    id='code'
+                    maxLength={6}
+                    pattern={REGEXP_ONLY_DIGITS}
+                    required
+                    autoFocus
+                    value={code}
+                    onChange={setCode}
+                    onComplete={() => formRef.current?.requestSubmit()}
+                    containerClassName='justify-center'
+                  >
+                    <InputOTPGroup>
+                      {Array.from({ length: 6 }, (_, i) => (
+                        <InputOTPSlot key={i} index={i} />
+                      ))}
+                    </InputOTPGroup>
+                  </InputOTP>
+                </Field>
+              )}
+              {!sent && !usePassword && (
+                <Field orientation='horizontal'>
+                  <Checkbox id='adult' checked={adult} onCheckedChange={(v) => setAdult(v === true)} required />
+                  <FieldLabel htmlFor='adult' className='block leading-snug font-normal'>
+                    I am 18 or older and agree to the <a href='/terms' className='underline'>Terms</a> and <a href='/privacy' className='underline'>Privacy Policy</a>.
+                  </FieldLabel>
+                </Field>
+              )}
+              <Field>
+                <Button type='submit' disabled={busy}>
+                  {sent || usePassword ? 'Sign in' : 'Send code'}
+                </Button>
+              </Field>
+              {!sent && !usePassword && (
+                <>
+                  <FieldSeparator>Or continue with</FieldSeparator>
+                  <Field>
+                    <Button variant='outline' type='button' disabled={busy} onClick={() => social('github')}>
+                      <RiGithubFill />
+                      GitHub
+                    </Button>
+                  </Field>
+                </>
+              )}
+            </FieldGroup>
+          </form>
+        </div>
+      </div>
+      <div className='relative hidden bg-muted lg:block'>
+        {/* Animated WebP loops on its own; reduced-motion visitors get the still frame. */}
+        <picture>
+          <source srcSet={loginCove} media='(prefers-reduced-motion: reduce)' />
+          <img
+            src={loginCoveAnimated}
+            alt=''
+            className='absolute inset-0 size-full object-cover [image-rendering:pixelated]'
+          />
+        </picture>
+      </div>
     </main>
   )
 }

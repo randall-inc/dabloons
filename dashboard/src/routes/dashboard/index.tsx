@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useBalanceHistory, useMe } from '@/lib/api'
 import { formatWhole } from '@/lib/utils'
-import { Button } from '@/components/ui/8bit/button'
+import { Button } from '@/components/ui/button'
 import { BuyDialog } from '@/components/buy-dialog'
 import { PURCHASES_ENABLED } from '../../../../shared/pricing'
 import { TransferDialog } from '@/components/transfer-dialog'

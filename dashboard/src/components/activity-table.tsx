@@ -1,6 +1,6 @@
 import { type Activity, useActivity } from '@/lib/api'
 import { formatNumber } from '@/lib/utils'
-import { Button } from '@/components/ui/8bit/button'
+import { Button } from '@/components/ui/button'
 import { type Column, DataTable, column } from '@/components/data-table'
 
 /** Writes the signed-in human's agents made, newest first. `agent` scopes to one. */

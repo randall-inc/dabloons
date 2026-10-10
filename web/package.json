@@ -7,13 +7,22 @@
   "author": "",
   "license": "Apache-2.0",
   "dependencies": {
+    "@react-email/components": "^1.0.12",
     "hono": "^4.13.8",
-    "pg": "^8.23.0"
+    "pg": "^8.23.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260919.1",
+    "@react-email/ui": "^6.11.1",
     "@types/pg": "^8.23.1",
+    "@types/react": "^19.3.0",
+    "react-email": "^6.11.1",
     "typescript": "^7.0.2",
     "wrangler": "^4.135.0"
+  },
+  "scripts": {
+    "email": "email dev --dir src/emails --port 3010"
   }
 }

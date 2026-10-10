@@ -61,7 +61,7 @@ function AppSidebar() {
   const isActive = (to: string) =>
     to === '/dashboard' ? pathname === to : pathname.startsWith(to)
   return (
-    <Sidebar className='retro border-foreground group-data-[side=left]:border-r-4 dark:border-ring'>
+    <Sidebar>
       <SidebarHeader className='px-4 py-3'>
         <Logo to='/dashboard' />
       </SidebarHeader>

@@ -7,9 +7,9 @@ import {
   QueryClientProvider,
 } from '@tanstack/react-query'
 import { RouterProvider, createRouter } from '@tanstack/react-router'
-import { toast } from '@/components/ui/8bit/toast'
+import { toast } from 'sonner'
 import { ApiError, session } from '@/lib/api'
-import { TooltipProvider } from '@/components/ui/8bit/tooltip'
+import { TooltipProvider } from '@/components/ui/tooltip'
 import { ThemeProvider } from './context/theme-provider'
 import { routeTree } from './routeTree.gen'
 import './styles/index.css'

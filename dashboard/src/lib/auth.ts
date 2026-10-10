@@ -85,3 +85,49 @@ export async function verifyCode(
   await sendCode(email)
   return { resent: true }
 }
+
+/*
+ * GitHub / Google sign-in through Neon Auth. Neon's cookie lives in our
+ * site's partition, so a top-level OAuth redirect can't set it directly:
+ * /sign-in/social drops a challenge cookie here, Neon sends the browser back
+ * to callbackURL with ?neon_auth_session_verifier=…, and redeeming that
+ * verifier (with the challenge cookie) sets the session cookie /token needs.
+ * What the login page knew before leaving (redirect, referral, 18+) rides
+ * along in sessionStorage.
+ */
+
+export type SocialProvider = 'github' | 'google'
+export const SOCIAL_VERIFIER_PARAM = 'neon_auth_session_verifier'
+const SOCIAL_KEY = 'dabloons_social'
+
+type SocialState = { redirect?: string; ref?: string; ageConfirmed?: boolean }
+
+export async function startSocial(provider: SocialProvider, state: SocialState) {
+  sessionStorage.setItem(SOCIAL_KEY, JSON.stringify(state))
+  const callbackURL = `${window.location.origin}/login`
+  const r = await neon('/sign-in/social', { provider, callbackURL, errorCallbackURL: callbackURL })
+  if (!r.ok || typeof r.json.url !== 'string') throw neonError(r, "Couldn't start sign-in")
+  window.location.href = r.json.url
+}
+
+/** Finishes a social sign-in on return; returns the board session token and where to go. */
+export async function finishSocial(verifier: string): Promise<{ token: string; redirect?: string }> {
+  let state: SocialState = {}
+  try {
+    state = JSON.parse(sessionStorage.getItem(SOCIAL_KEY) ?? '{}')
+  } catch {
+    // Missing or mangled: sign in without the extras.
+  }
+  sessionStorage.removeItem(SOCIAL_KEY)
+  const s = await neon(`/get-session?${SOCIAL_VERIFIER_PARAM}=${encodeURIComponent(verifier)}`)
+  if (!s.ok) throw neonError(s, 'Sign-in expired. Try again.')
+  const t = await neon('/token')
+  if (!t.ok || typeof t.json.token !== 'string')
+    throw new Error('This browser blocked sign-in. Use your email instead.')
+  const x = await api<Exchange>('/auth/neon-exchange', {
+    jwt: t.json.token,
+    referral_code: state.ref,
+    age_confirmed: state.ageConfirmed,
+  })
+  return { token: x.session_token, redirect: state.redirect }
+}

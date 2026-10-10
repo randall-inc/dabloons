@@ -1,19 +1,19 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute } from '@tanstack/react-router'
-import { toast } from '@/components/ui/8bit/toast'
+import { toast } from 'sonner'
 import { type Project, api, useProjects } from '@/lib/api'
 import { formatNumber } from '@/lib/utils'
-import { Button } from '@/components/ui/8bit/button'
+import { Button } from '@/components/ui/button'
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-} from '@/components/ui/8bit/dialog'
-import { Input } from '@/components/ui/8bit/input'
-import { Label } from '@/components/ui/8bit/label'
+} from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import { type Column, DataTable, column } from '@/components/data-table'
 
 const projectColumns: Column<Project>[] = [

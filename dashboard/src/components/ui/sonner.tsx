@@ -2,7 +2,8 @@
 
 import { useTheme } from "@/context/theme-provider"
 import { Toaster as Sonner, type ToasterProps } from "sonner"
-import { RiCheckboxCircleLine, RiInformationLine, RiErrorWarningLine, RiCloseCircleLine, RiLoaderLine } from "@remixicon/react"
+import { HugeiconsIcon } from "@hugeicons/react"
+import { CheckmarkCircle02Icon, InformationCircleIcon, Alert02Icon, MultiplicationSignCircleIcon, Loading03Icon } from "@hugeicons/core-free-icons"
 
 const Toaster = ({ ...props }: ToasterProps) => {
   const { theme = "system" } = useTheme()
@@ -13,19 +14,19 @@ const Toaster = ({ ...props }: ToasterProps) => {
       className="toaster group"
       icons={{
         success: (
-          <RiCheckboxCircleLine className="size-4" />
+          <HugeiconsIcon icon={CheckmarkCircle02Icon} strokeWidth={2} className="size-4" />
         ),
         info: (
-          <RiInformationLine className="size-4" />
+          <HugeiconsIcon icon={InformationCircleIcon} strokeWidth={2} className="size-4" />
         ),
         warning: (
-          <RiErrorWarningLine className="size-4" />
+          <HugeiconsIcon icon={Alert02Icon} strokeWidth={2} className="size-4" />
         ),
         error: (
-          <RiCloseCircleLine className="size-4" />
+          <HugeiconsIcon icon={MultiplicationSignCircleIcon} strokeWidth={2} className="size-4" />
         ),
         loading: (
-          <RiLoaderLine className="size-4 animate-spin" />
+          <HugeiconsIcon icon={Loading03Icon} strokeWidth={2} className="size-4 animate-spin" />
         ),
       }}
       style={
