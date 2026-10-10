@@ -5,8 +5,10 @@ import { RiCheckLine, RiFileCopyLine } from '@remixicon/react'
 import { Button } from '@/components/ui/8bit/button'
 import { Logo } from '@/components/logo'
 import { SiteFooter } from '@/components/site-footer'
-import heroBeach from '@/assets/hero-beach-dither.png'
-import heroBeachAnimated from '@/assets/hero-beach-dither.webp'
+import heroDusk from '@/assets/hero-halloween-light-dither.png'
+import heroDuskAnimated from '@/assets/hero-halloween-light-dither.webp'
+import heroNight from '@/assets/hero-halloween-dark-dither.png'
+import heroNightAnimated from '@/assets/hero-halloween-dark-dither.webp'
 
 // Home page. Layout adapted from Tailark's Mist blocks (hero-section-2,
 // features-2, footer-1; MIT, https://tailark.com), trimmed to our content.
@@ -64,12 +66,21 @@ function Home() {
   return (
     <>
       <section className='relative isolate overflow-hidden'>
-        {/* Pixel art beach as the hero background; the fade keeps text readable.
-            The animated WebP loops on its own; reduced-motion visitors get the still frame. */}
-        <picture>
-          <source srcSet={heroBeach} media='(prefers-reduced-motion: reduce)' />
+        {/* Halloween pixel art as the hero background: a golden-afternoon skull island in
+            light mode, a moonlit ghost ship in dark mode. The fade keeps text readable.
+            The animated WebPs loop on their own; reduced-motion visitors get the still frame. */}
+        <picture className='dark:hidden'>
+          <source srcSet={heroDusk} media='(prefers-reduced-motion: reduce)' />
           <img
-            src={heroBeachAnimated}
+            src={heroDuskAnimated}
+            alt=''
+            className='absolute inset-0 -z-10 size-full object-cover [image-rendering:pixelated]'
+          />
+        </picture>
+        <picture className='hidden dark:block'>
+          <source srcSet={heroNight} media='(prefers-reduced-motion: reduce)' />
+          <img
+            src={heroNightAnimated}
             alt=''
             className='absolute inset-0 -z-10 size-full object-cover [image-rendering:pixelated]'
           />

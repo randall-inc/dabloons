@@ -13,6 +13,10 @@ Live examples, both in `dashboard/src/assets/`:
 |---|---|---|---|
 | Beach with pirate ship | `scenes/hero_beach.py` | 800x300 | home hero (`hero-beach-dither.*`) |
 | Sunset cove, lighthouse, dock | `scenes/login_cove.py` | 360x450 | login art panel (`login-cove-dither.*`) |
+| Halloween: skull island, golden afternoon | `scenes/hero_halloween_light.py` | 800x300 | home hero, light mode (`hero-halloween-light-dither.*`) |
+| Halloween: ghost ship, harvest moon | `scenes/hero_halloween_dark.py` | 800x300 | home hero, dark mode (`hero-halloween-dark-dither.*`) |
+| Halloween: pumpkin shore, daytime moon | `scenes/login_halloween_light.py` | 360x450 | login art panel, light mode (`login-halloween-light-dither.*`) |
+| Halloween: haunted lighthouse, night | `scenes/login_halloween_dark.py` | 360x450 | login art panel, dark mode (`login-halloween-dark-dither.*`) |
 
 Both loop in 32 frames x 190 ms (about 6 s). The owner tuned that speed by eye: 2 s felt frantic, 8 s too sleepy. Keep new scenes at the same pace so the site feels consistent.
 
@@ -81,6 +85,8 @@ import sceneAnimated from '@/assets/<name>-dither.webp'
   />
 </picture>
 ```
+
+For a light and a dark version, render two `<picture>`s, one with `className='dark:hidden'` and one with `className='hidden dark:block'` (the site's theme is the `.dark` class, not the media query).
 
 `[image-rendering:pixelated]` is required, or the browser blurs the dither when it scales the image up. To change only the speed, re-encode the existing frames with a different `--ms` value; there's no need to repaint.
 
