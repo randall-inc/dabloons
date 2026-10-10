@@ -267,6 +267,96 @@ Worker rules (bid place, job submit):
 Every flag takes a value; an unknown flag, or a flag with no value, is an error.
 Global flags: --json (machine-readable output for agent callers), --help`;
 
+/** The coin logo (integrations/assets/logo.svg), one letter per pixel; "." is empty. */
+const COIN_PALETTE: Record<string, [number, number, number]> = {
+  a: [0x4a, 0x2c, 0x06], b: [0x9c, 0x5a, 0x12], c: [0xd1, 0x8f, 0x22], d: [0xf2, 0xbd, 0x3f],
+  e: [0xff, 0xdc, 0x72], f: [0xff, 0xf7, 0xd6], g: [0xff, 0xff, 0xff],
+};
+const COIN = [
+  "..............aaaa..............", "..........aaaafeeeaaaa..........",
+  "........aafffffeeeeeeeaa........", ".......afffffffeeeeeeeeea.......",
+  ".....aafffffbbbbbbbbeeeecaa.....", "....aaffffbbddddddddbbecccaa....",
+  "....afffbbddddddddddddccccca....", "...afffbbddddddddddddddccccca...",
+  "..afffbbddddddddddddddddccccca..", "..afffbddddfffffffdddddddcccca..",
+  ".afffbdddddfeeeeeeefddddddcccca.", ".afffbddgddfeeeeeeeeedddddcccca.",
+  ".affbddgggdfeeecceeeecdddddccba.", ".affbdddgddfeeecddeeecdddddcbba.",
+  "afffbddddddfeeecddfeecdddddcbbba", "aeeebddddddfeeecddfeecdddddcbbba",
+  "aeeebddddddfeeecddfeecdddddcbbba", "aeeebddddddfeeecddfeecdddddcbbba",
+  ".aeebddddddfeeecddfeecdddddcbba.", ".aeebddddddfeeecdffeecdddddcbba.",
+  ".aeeebdddddfeeeeffeeecddddcbbba.", ".aeeebdddddfeeeeeeeeccddddcbbba.",
+  "..aeeecddddfeeeeeecccddddcbbba..", "..aeecccddddcccccccdddddccbbba..",
+  "...acccccddddddddddddddccbbba...", "....acccccddddddddddddccbbba....",
+  "....aaccccccddddddddccbbbbaa....", ".....aacccccccccccccbbbbbaa.....",
+  ".......acccccbbbbbbbbbbba.......", "........aaccbbbbbbbbbbaa........",
+  "..........aaaabbbbaaaa..........", "..............aaaa..............",
+];
+/** The same coin at half size, for narrow terminals. */
+const COIN_SMALL = [
+  ".....aaaaaa.....", "...aafeeeecaa...", "..affbbbbbbeca..", ".afbbddddddbcca.",
+  ".afbddddddddcca.", "affdddeeeedddcca", "afbdgdeedeedddba", "afbdddeedfedddba",
+  "aebdddeedfedddba", "aebdddeedfedddba", "aeedddeefecddcba", ".aecddeeecddcba.",
+  ".acccddddddcbba.", "..acccddddcbba..", "...aacbbbbbaa...", ".....aaaaaa.....",
+];
+
+/** The coin as terminal rows: two pixels per character cell (▀ = top in fg, bottom in bg). */
+function coinRows(coin: string[]): string[] {
+  const truecolor = /truecolor|24bit/i.test(process.env.COLORTERM ?? "");
+  // Without 24-bit color, the nearest xterm-256 color cube entry.
+  const color = ([r, g, b]: number[], layer: 38 | 48) =>
+    truecolor
+      ? `\x1b[${layer};2;${r};${g};${b}m`
+      : `\x1b[${layer};5;${16 + 36 * Math.round((r / 255) * 5) + 6 * Math.round((g / 255) * 5) + Math.round((b / 255) * 5)}m`;
+  const rows: string[] = [];
+  for (let y = 0; y < coin.length; y += 2) {
+    let line = "";
+    for (let x = 0; x < coin[y].length; x++) {
+      const top = COIN_PALETTE[coin[y][x]];
+      const bottom = COIN_PALETTE[coin[y + 1][x]];
+      if (top && bottom) line += color(top, 38) + color(bottom, 48) + "▀";
+      else if (top) line += color(top, 38) + "▀";
+      else if (bottom) line += color(bottom, 38) + "▄";
+      else line += " ";
+      line += "\x1b[0m";
+    }
+    rows.push(line);
+  }
+  return rows;
+}
+
+const WELCOME = [
+  "Welcome to Dabloons.",
+  "Turn your leftover AI usage into dabloons.",
+  "",
+  "Get started:   dabloons login",
+  "All commands:  dabloons help",
+];
+
+/**
+ * Bare `dabloons` before logging in. In a color terminal: the biggest coin that
+ * fits beside the text, else the small coin above it, else text alone. Plain
+ * text when piped (agents), so it never wraps or prints escape codes.
+ */
+function welcome() {
+  const fancy = process.stdout.isTTY && !process.env.NO_COLOR && process.env.TERM !== "dumb";
+  const cols = process.stdout.columns || 80;
+  const textWidth = Math.max(...WELCOME.map((l) => l.length));
+  const coin = [COIN, COIN_SMALL].find((c) => 2 + c[0].length + 3 + textWidth <= cols);
+  if (fancy && coin) {
+    const rows = coinRows(coin);
+    const top = Math.floor((rows.length - WELCOME.length) / 2);
+    const lines = rows.map((r, i) => {
+      const text = WELCOME[i - top] ?? "";
+      return `  ${r}   ${i === top ? `\x1b[1m${text}\x1b[0m` : text}`.trimEnd();
+    });
+    console.log("\n" + lines.join("\n") + "\n");
+  } else if (fancy && 2 + COIN_SMALL[0].length <= cols) {
+    const rows = coinRows(COIN_SMALL).map((r) => `  ${r}`);
+    console.log("\n" + rows.join("\n") + "\n\n" + WELCOME.join("\n") + "\n");
+  } else {
+    console.log(WELCOME.join("\n"));
+  }
+}
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Best-effort: open the verification URL in the user's browser. */
@@ -369,6 +459,11 @@ async function main() {
   const [cmd, sub, ...rest] = args;
 
   try {
+    // Bare command before logging in: the welcome, which points at `dabloons login`.
+    if (!cmd && !TOKEN) {
+      welcome();
+      return;
+    }
     // Help anywhere, or a command group with no subcommand: print help, exit 0.
     if (!cmd || cmd === "help" || args.includes("--help") || (Object.hasOwn(COMMANDS, cmd) && sub === undefined)) {
       console.log(HELP);
