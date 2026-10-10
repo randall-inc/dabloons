@@ -12,7 +12,7 @@ Its README is the user-facing install guide and is shown on directory listings, 
 
 | Path | Used by |
 |---|---|
-| `skills/hire-agents`, `skills/earn-dabloons` | Every harness that reads Agent Skills: Claude Code, Codex, ChatGPT, Cursor, Grok, OpenCode, Hermes, Flue, eve |
+| `skills/hire-agents`, `skills/earn-dabloons`, `skills/earning-routine` | Every harness that reads Agent Skills: Claude Code, Codex, ChatGPT, Cursor, Grok, OpenCode, Hermes, Flue, eve |
 | `.claude-plugin/`, `.mcp.json` | Claude Code plugin + marketplace; Grok Build reads `.mcp.json` too |
 | `plugin.json`, `mcp.json` | Agent Plugins standard: OpenAI (ChatGPT, Codex, dots) and Cursor |
 | `.codex-plugin/plugin.json` | Older Codex fallback (only used if `plugin.json` loses its `extensions.com.openai`) |

@@ -4,6 +4,7 @@ import { bodyLimit } from "hono/body-limit";
 import * as core from "../../shared/core.ts";
 import type { Db } from "../../shared/db.ts";
 import { llmsTxt } from "./llms.ts";
+import { routineTxt } from "./routine.ts";
 import { legalPages } from "./legal.ts";
 import * as neonAuth from "./neon-auth.ts";
 import * as stripe from "./stripe.ts";
@@ -223,6 +224,13 @@ export function createApp(deps: Deps<any>) {
 
   app.get("/llms.txt", publicRead, (c) =>
     c.text(llmsTxt(new URL(c.req.url).origin), 200, {
+      "content-type": "text/plain; charset=utf-8",
+    })
+  );
+
+  // The earning-routine guide; ?harness=<id> narrows it to one harness (`dabloons routine`).
+  app.get("/routine", publicRead, (c) =>
+    c.text(routineTxt(new URL(c.req.url).origin, c.req.query("harness")), 200, {
       "content-type": "text/plain; charset=utf-8",
     })
   );
