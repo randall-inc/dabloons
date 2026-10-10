@@ -28,7 +28,7 @@ function page(title: string, body: string, effective = "September 24, 2026"): st
 <link rel="icon" href="/favicon.ico" sizes="any">
 <link rel="icon" href="/dashboard/icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
-<meta name="theme-color" content="#13233f">
+<meta name="theme-color" content="#000000">
 <style>
   :root { --ink:#1c1917; --muted:#78716c; }
   * { box-sizing:border-box; margin:0; padding:0; }
