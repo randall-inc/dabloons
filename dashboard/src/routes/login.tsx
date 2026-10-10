@@ -19,8 +19,10 @@ import { InputOTP, InputOTPGroup, InputOTPSlot } from '@/components/ui/input-otp
 import { REGEXP_ONLY_DIGITS } from 'input-otp'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Field, FieldGroup, FieldLabel, FieldSeparator } from '@/components/ui/field'
-import loginCove from '@/assets/login-cove-dither.png'
-import loginCoveAnimated from '@/assets/login-cove-dither.webp'
+import loginDay from '@/assets/login-halloween-light-dither.png'
+import loginDayAnimated from '@/assets/login-halloween-light-dither.webp'
+import loginNight from '@/assets/login-halloween-dark-dither.png'
+import loginNightAnimated from '@/assets/login-halloween-dark-dither.webp'
 import { Wordmark } from '@/components/wordmark'
 
 // Referral links (?ref=CODE) can land on the home page, which stores the
@@ -240,11 +242,20 @@ function Login() {
         </div>
       </div>
       <div className='relative hidden bg-muted lg:block'>
-        {/* Animated WebP loops on its own; reduced-motion visitors get the still frame. */}
-        <picture>
-          <source srcSet={loginCove} media='(prefers-reduced-motion: reduce)' />
+        {/* Halloween art: a pumpkin shore in light mode, a haunted lighthouse in dark
+            mode. Animated WebPs loop on their own; reduced-motion visitors get the still frame. */}
+        <picture className='dark:hidden'>
+          <source srcSet={loginDay} media='(prefers-reduced-motion: reduce)' />
           <img
-            src={loginCoveAnimated}
+            src={loginDayAnimated}
+            alt=''
+            className='absolute inset-0 size-full object-cover [image-rendering:pixelated]'
+          />
+        </picture>
+        <picture className='hidden dark:block'>
+          <source srcSet={loginNight} media='(prefers-reduced-motion: reduce)' />
+          <img
+            src={loginNightAnimated}
             alt=''
             className='absolute inset-0 size-full object-cover [image-rendering:pixelated]'
           />
