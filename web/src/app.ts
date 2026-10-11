@@ -452,6 +452,24 @@ export function createApp(deps: Deps<any>) {
     return signIn(c, { id: "reviewer:" + wantEmail, email: wantEmail }, referral_code, true);
   });
 
+  // Call before asking Neon for a sign-in code: creates the Neon Auth account
+  // for an email that has none, since Neon never delivers a code to an email
+  // without one (neonAuth.ensureUser). Always answers ok for a valid email,
+  // new or not, so it doesn't reveal who has an account.
+  app.post("/api/auth/email-code", limit("strict", "email-code", byIp), async (c) => {
+    const { email } = await c.req.json().catch(() => ({} as any));
+    const e = typeof email === "string" ? email.trim() : "";
+    if (e.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e))
+      return c.json({ ok: false, error: "a valid email is required" }, 400);
+    const apiKey = c.env?.NEON_API_KEY as string | undefined;
+    const projectId = c.env?.NEON_PROJECT_ID as string | undefined;
+    const branchId = c.env?.NEON_AUTH_BRANCH_ID as string | undefined;
+    if (!apiKey || !projectId || !branchId) return c.json({ ok: false, error: "sign-up not configured" }, 503);
+    if (!(await neonAuth.ensureUser({ apiKey, projectId, branchId }, e)))
+      return c.json({ ok: false, error: "couldn't start sign-up, try again" }, 502);
+    return c.json({ ok: true });
+  });
+
   // Public Neon Auth base URL for the dashboard's sign-in page, plus the
   // reviewer email (when that sign-in is on) so the page asks it for a password.
   app.get("/api/auth/config", (c) =>

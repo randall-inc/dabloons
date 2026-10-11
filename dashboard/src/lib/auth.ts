@@ -54,6 +54,9 @@ function neonError(r: { status: number; json: Record<string, unknown> }, fallbac
 }
 
 export async function sendCode(email: string) {
+  // Neon only emails a code to an email that already has an account, so the
+  // board makes one first for a new email.
+  await api('/auth/email-code', { email })
   const r = await neon('/email-otp/send-verification-otp', { email, type: 'sign-in' })
   if (!r.ok) throw neonError(r, "Couldn't send code")
 }

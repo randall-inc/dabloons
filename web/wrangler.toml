@@ -92,6 +92,9 @@ crons = ["*/5 * * * *"]
 DABLOONS_JUDGE_URL = "https://api.typesafe.ai/v1/systemone"
 # Neon Auth (managed Better Auth) base URL — public, not a secret.
 NEON_AUTH_BASE_URL = "https://ep-frosty-breeze-are4avbe.neonauth.c-4.us-west-2.aws.neon.tech/neondb/auth"
+# The Neon project and branch that own those Neon Auth users (for NEON_API_KEY).
+NEON_PROJECT_ID = "young-haze-75232746"
+NEON_AUTH_BRANCH_ID = "br-wispy-glade-arbv3hun"
 
 # Secrets (wrangler secret put ...):
 #   DABLOONS_ADMIN_TOKEN   — token for system/admin routes
@@ -104,3 +107,7 @@ NEON_AUTH_BASE_URL = "https://ep-frosty-breeze-are4avbe.neonauth.c-4.us-west-2.a
 #   REVIEWER_EMAIL         — optional; with REVIEWER_PASSWORD, turns on password
 #   REVIEWER_PASSWORD        sign-in (/login?password=1) for this one app-directory
 #                            reviewer account. Unset = off.
+#   NEON_API_KEY           — Neon API key scoped to the dabloons project. Creates
+#                            the Neon Auth user before a new email's first code
+#                            (POST /api/auth/email-code). Unset = new emails get
+#                            no code.

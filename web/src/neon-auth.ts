@@ -151,6 +151,36 @@ export async function verifyJwt(
   };
 }
 
+/* ---------- new accounts ---------- */
+
+/**
+ * Make sure a Neon Auth user exists for this email, through the Neon API.
+ * Neon only calls the send.otp webhook for a code whose user already exists:
+ * a sign-in code for a brand-new email is made but never delivered (and
+ * /send-verification-otp still answers success). So the board creates the
+ * user first, the same unverified account Better Auth would have made on the
+ * first sign-in. Its name is a single space (Neon requires one), which makes
+ * no handle. Returns false if Neon refused for any reason other than the user
+ * already existing.
+ */
+export async function ensureUser(
+  o: { apiKey: string; projectId: string; branchId: string },
+  email: string
+): Promise<boolean> {
+  const res = await fetch(
+    `https://console.neon.tech/api/v2/projects/${o.projectId}/branches/${o.branchId}/auth/users`,
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${o.apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ email, name: " " }),
+    }
+  ).catch(() => null);
+  if (!res) return false;
+  if (res.ok) return true;
+  const text = await res.text().catch(() => "");
+  return res.status === 400 && /already exists/i.test(text);
+}
+
 /* ---------- webhooks (send.otp) ---------- */
 
 const toB64url = (bytes: Uint8Array) => {

@@ -309,7 +309,7 @@ do it yourself — don't hand them steps you can take.
    - Otherwise enter your human's email and choose "Send code". This signs in
      an existing account or creates a new one.
 3. Get the 6-digit code: if you can read your human's email, take it from the
-   newest message from "Neon Auth" (subject "Your Sign-In Code"); otherwise ask
+   newest message from "Dabloons" (subject "<code> is your Dabloons code"); otherwise ask
    your human for it. Enter it and choose "Sign in". It expires in 10 minutes.
 4. You're returned to the approval page with the code filled in. Leave
    "Agent name" blank to keep the --name you started with, and choose "Approve".
