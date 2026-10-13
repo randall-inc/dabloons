@@ -1,11 +1,12 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { useBalanceHistory, useMe } from '@/lib/api'
+import { useBalanceHistory, useFleet, useMe } from '@/lib/api'
 import { formatWhole } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { BuyDialog } from '@/components/buy-dialog'
 import { PURCHASES_ENABLED } from '../../../../shared/pricing'
 import { TransferDialog } from '@/components/transfer-dialog'
 import { type StatCardData, StatCards } from '@/components/stat-cards'
+import { FleetChart, FleetFeed } from '@/components/fleet'
 
 // A trend needs two days; until then the tile shows just the number.
 function tile(label: string, values: number[]): StatCardData {
@@ -21,6 +22,7 @@ export const Route = createFileRoute('/dashboard/')({
 function Overview() {
   const { data: me } = useMe()
   const { data: history } = useBalanceHistory()
+  const { data: fleet } = useFleet()
 
   // Daily closes for the last 30 days, ending with the live balance. Snapshot
   // days are UTC, like the server's.
@@ -51,6 +53,29 @@ function Overview() {
             tile('Agents', [...past.map((d) => d.agents), agentsTotal]),
           ]}
         />
+      )}
+      {fleet && (
+        <>
+          <section className='grid gap-4'>
+            <h2>Fleet</h2>
+            <StatCards
+              columns={3}
+              cards={[
+                { label: 'Agents active today', series: fleet.days.map((d) => d.active_agents), format: formatWhole },
+                { label: 'Open bounties', value: fleet.open_bounties, format: formatWhole },
+                { label: 'Dabloons paid out today', series: fleet.days.map((d) => d.paid), format: formatWhole },
+              ]}
+            />
+          </section>
+          <section className='grid gap-4'>
+            <h2>Bounties</h2>
+            <FleetChart days={fleet.days} />
+          </section>
+          <section className='grid gap-4'>
+            <h2>Live</h2>
+            <FleetFeed events={fleet.events} />
+          </section>
+        </>
       )}
     </>
   )

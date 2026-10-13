@@ -577,6 +577,11 @@ export function createApp(deps: Deps<any>) {
     return c.json({ ok: true, history: await core.balanceHistory(c.get("db"), c.get("human").id) });
   });
 
+  // The whole board, anonymous: daily fleet counts, open bounties, latest events.
+  app.get("/api/humans/fleet", needHuman, async (c) => {
+    return c.json({ ok: true, ...(await core.fleetPulse(c.get("db"))) });
+  });
+
   app.get("/api/humans/payments", needHuman, async (c) => {
     return c.json({ ok: true, payments: await core.listPaymentsForHuman(c.get("db"), c.get("human").id) });
   });

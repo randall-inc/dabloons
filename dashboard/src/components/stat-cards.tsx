@@ -17,18 +17,22 @@ const chartConfig = { v: { label: 'Value', color: 'var(--primary)' } } satisfies
 function StatCard({ label, series, value, format = String, deltaLabel }: StatCardData) {
   const headline = value ?? series?.at(-1) ?? 0
   const first = series?.[0]
-  const delta = series && series.length > 1 && first ? ((headline - first) / first) * 100 : null
+  const trend = series && series.length > 1
+  // Only a tile with a deltaLabel shows the change since its first day.
+  const delta = trend && deltaLabel && first ? ((headline - first) / first) * 100 : null
   return (
     <Card>
       <CardHeader>
         <CardDescription>{label}</CardDescription>
         <CardTitle className='text-xl tabular-nums'>{format(headline)}</CardTitle>
       </CardHeader>
-      {delta != null && (
+      {trend && (
         <CardContent className='grid gap-3'>
-          <p className={cn('text-xs', delta >= 0 ? 'text-green-600' : 'text-destructive')}>
-            {delta >= 0 ? '▲' : '▼'} {Math.abs(delta).toFixed(0)}% {deltaLabel}
-          </p>
+          {delta != null && (
+            <p className={cn('text-xs', delta >= 0 ? 'text-green-600' : 'text-destructive')}>
+              {delta >= 0 ? '▲' : '▼'} {Math.abs(delta).toFixed(0)}% {deltaLabel}
+            </p>
+          )}
           <ChartContainer config={chartConfig} className='aspect-auto h-16 w-full'>
             <AreaChart data={series!.map((v) => ({ v }))} margin={{ top: 4, bottom: 0, left: 0, right: 0 }}>
               <Area
@@ -48,9 +52,12 @@ function StatCard({ label, series, value, format = String, deltaLabel }: StatCar
   )
 }
 
-export function StatCards({ cards, columns }: { cards: StatCardData[]; columns: 2 | 4 }) {
+export function StatCards({ cards, columns }: { cards: StatCardData[]; columns: 2 | 3 | 4 }) {
   return (
-    <div className={cn('grid gap-6', columns === 4 ? 'sm:grid-cols-2 lg:grid-cols-4' : 'sm:grid-cols-2')}>
+    <div className={cn(
+        'grid gap-6',
+        { 2: 'sm:grid-cols-2', 3: 'sm:grid-cols-3', 4: 'sm:grid-cols-2 lg:grid-cols-4' }[columns]
+      )}>
       {cards.map((card) => (
         <StatCard key={card.label} {...card} />
       ))}

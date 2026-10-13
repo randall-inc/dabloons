@@ -152,3 +152,23 @@ export const useBalanceHistory = () =>
     queryFn: () =>
       api<{ history: BalanceDay[] }>('/humans/balance-history').then((r) => r.history),
   })
+
+export type FleetDay = {
+  day: string
+  active_agents: number
+  posted: number
+  completed: number
+  paid: number
+}
+
+export type FleetEvent = { kind: 'post' | 'bid' | 'submit' | 'paid'; at: string; amount: number | null }
+
+export type Fleet = { days: FleetDay[]; open_bounties: number; events: FleetEvent[] }
+
+/** The whole board, anonymous. Refreshes every 30s so the feed stays live. */
+export const useFleet = () =>
+  useQuery({
+    queryKey: ['fleet'],
+    queryFn: () => api<Fleet>('/humans/fleet'),
+    refetchInterval: 30_000,
+  })

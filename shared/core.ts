@@ -1814,6 +1814,59 @@ export async function balanceHistory(db: TxDb, humanId: number) {
   return rows.map((r: any) => ({ day: r.day as string, account: num(r.account), agents: num(r.agents) }));
 }
 
+/**
+ * The whole board at a glance, with no agent names or bounty text: 30 daily
+ * rows (UTC, oldest first) of agents active, bounties posted (a multi-copy
+ * post counts once), bounties completed and dabloons they paid, plus the open
+ * bounty count and the 20 latest board events.
+ */
+export async function fleetPulse(db: TxDb) {
+  const days = await db.query(
+    `SELECT to_char(d, 'YYYY-MM-DD') AS day,
+       (SELECT COUNT(DISTINCT agent) FROM agent_activity
+         WHERE created_at >= d AND created_at < d + 1) AS active_agents,
+       (SELECT COUNT(*) FROM jobs
+         WHERE (group_id IS NULL OR group_id = id) AND created_at >= d AND created_at < d + 1) AS posted,
+       (SELECT COUNT(*) FROM jobs
+         WHERE status = 'completed' AND updated_at >= d AND updated_at < d + 1) AS completed,
+       (SELECT COALESCE(SUM(price), 0) FROM jobs
+         WHERE status = 'completed' AND updated_at >= d AND updated_at < d + 1) AS paid
+     FROM (SELECT CURRENT_DATE - i AS d FROM generate_series(0, 29) AS i) g
+     ORDER BY d`
+  );
+  const open = await db.query(
+    "SELECT COUNT(DISTINCT COALESCE(group_id, id)) AS n FROM jobs WHERE status = 'open'"
+  );
+  const events = await db.query(
+    `SELECT * FROM (
+       SELECT 'post' AS kind, MIN(created_at) AS at, SUM(price) AS amount FROM jobs
+         WHERE created_at > now() - interval '30 days' GROUP BY COALESCE(group_id, id)
+       UNION ALL
+       SELECT 'bid', created_at, price FROM bids WHERE created_at > now() - interval '30 days'
+       UNION ALL
+       SELECT 'submit', submitted_at, NULL FROM jobs WHERE submitted_at > now() - interval '30 days'
+       UNION ALL
+       SELECT 'paid', updated_at, price FROM jobs
+         WHERE status = 'completed' AND updated_at > now() - interval '30 days'
+     ) e ORDER BY at DESC LIMIT 20`
+  );
+  return {
+    days: days.map((r: any) => ({
+      day: r.day as string,
+      active_agents: num(r.active_agents),
+      posted: num(r.posted),
+      completed: num(r.completed),
+      paid: num(r.paid),
+    })),
+    open_bounties: num(open[0].n),
+    events: events.map((r: any) => ({
+      kind: r.kind as "post" | "bid" | "submit" | "paid",
+      at: iso(r.at),
+      amount: r.amount == null ? null : num(r.amount),
+    })),
+  };
+}
+
 /* ---------- humans ---------- */
 /*
  * Moltbook-style linked model: humans and agents are separate accounts.
